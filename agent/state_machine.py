@@ -49,6 +49,7 @@ from backend.db import Communication, Invoice, Payment, Promise
 from policy.constraints import PolicyConfig, PolicyState
 from simulator.behavior_model import CustomerBehaviorModel
 
+from agent.llm.extract import LLMExtractTool, PromiseExtraction
 from agent.tools import (
     AuditEvent,
     AuditLogTool,
@@ -209,6 +210,88 @@ def _record_promise(invoice_id: str, customer_id: str, chosen_action: str, ctx: 
         constraint_triggered=None, executed_action=None, human_approval_required=False,
         timestamp=as_of,
     ))
+
+
+def _parse_promised_date(date_str: Optional[str], as_of: dt.datetime) -> dt.datetime:
+    if date_str:
+        try:
+            return dt.datetime.strptime(date_str, "%Y-%m-%d")
+        except ValueError:
+            pass
+    return as_of + dt.timedelta(days=DEFAULT_PROMISE_HORIZON_DAYS)
+
+
+def process_customer_reply(
+    invoice_id: str, customer_id: str, reply_text: str, ctx: AgentContext, as_of: dt.datetime,
+    owed_amount: Optional[float] = None, extract_tool: Optional[LLMExtractTool] = None,
+) -> PromiseExtraction:
+    """Stage 8: real customer reply text -> §11 structured extraction
+    (agent/llm/extract.py, Gemini structured output) -> the SAME
+    audit-event pattern Stage 7 established for promise capture
+    (PROMISE_CAPTURED / SPONTANEOUS_PROMISE_CAPTURED).
+
+    Every reply gets a visible audit event, whether or not a promise
+    resulted -- a reply that looked promise-like but was correctly rejected
+    (vague language, or a genuine commitment whose confidence fell below
+    §11's 0.6 floor) is exactly as traceable as one that succeeded. Two
+    distinct rejection rationale codes so a reviewer can tell, from the
+    rationale_code alone, which kind of rejection happened without
+    re-reading the extraction:
+      - NO_COMMITMENT_DETECTED: the model itself found no genuine commitment
+      - EXTRACTION_BELOW_CONFIDENCE_FLOOR: the model DID detect one, but
+        confidence < 0.6 forced commitment_detected to False (§11's rule)
+
+    A captured promise whose stated amount doesn't match what's actually
+    owed is still recorded (a real commitment was made) but flagged via
+    PROMISE_CAPTURED_AMOUNT_MISMATCH and human_approval_required=True --
+    "flag, don't auto-accept" -- rather than silently trusting a promise
+    for the wrong amount.
+    """
+    audit = AuditLogTool(ctx.session)
+    tool = extract_tool or LLMExtractTool()
+    extraction = tool.extract_promise(reply_text, owed_amount=owed_amount)
+
+    if extraction.commitment_detected:
+        promise_id = f"prom-{invoice_id}-{ctx.day}-reply"
+        promised_date = _parse_promised_date(extraction.promised_date, as_of)
+        ctx.session.add(Promise(
+            promise_id=promise_id, invoice_id=invoice_id, promised_date=promised_date,
+            promised_amount=extraction.promised_amount, made_on=as_of,
+            extraction_confidence=extraction.confidence, kept=None,
+        ))
+        ctx.session.commit()
+        ctx.pending_promise_truth[promise_id] = True  # no simulator ground truth for a real reply; verify checks payments when the time comes
+
+        rationale = "PROMISE_CAPTURED_AMOUNT_MISMATCH" if extraction.amount_mismatch else "PROMISE_CAPTURED"
+        audit.write(AuditEvent(
+            invoice_id=invoice_id, customer_id=customer_id, step="act",
+            input_snapshot={
+                "reply_text": reply_text, "promise_id": promise_id,
+                "promised_date": str(promised_date), "promised_amount": extraction.promised_amount,
+                "confidence": extraction.confidence, "owed_amount": owed_amount,
+                "amount_mismatch": extraction.amount_mismatch, "notes": extraction.notes,
+            },
+            model_output={"raw_commitment_detected": extraction.raw_commitment_detected},
+            decision="promise_captured", rationale_code=rationale,
+            constraint_triggered=None, executed_action=None,
+            human_approval_required=bool(extraction.amount_mismatch),
+            timestamp=as_of,
+        ))
+    else:
+        rationale = "EXTRACTION_BELOW_CONFIDENCE_FLOOR" if extraction.confidence_floor_applied else "NO_COMMITMENT_DETECTED"
+        audit.write(AuditEvent(
+            invoice_id=invoice_id, customer_id=customer_id, step="act",
+            input_snapshot={
+                "reply_text": reply_text, "confidence": extraction.confidence, "notes": extraction.notes,
+                "raw_commitment_detected": extraction.raw_commitment_detected,
+            },
+            model_output=None,
+            decision="no_promise_captured", rationale_code=rationale,
+            constraint_triggered=None, executed_action=None, human_approval_required=False,
+            timestamp=as_of,
+        ))
+
+    return extraction
 
 
 def _dispatch(invoice_id: str, action: str, message: str, outcome, ctx: AgentContext, as_of: dt.datetime) -> None:
