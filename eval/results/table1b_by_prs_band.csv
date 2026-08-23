@@ -1,0 +1,10 @@
+PRS Band,n_customers,Arm,Total ₹ Recovered,Cost,Net Recovery,Incremental vs. No-Intervention,Incremental vs. Naive
+low (0.0-0.4),88,No-Intervention,2621627.55,0.0,2621627.55,0.0,1575.0
+low (0.0-0.4),88,Naive-Uniform,2621627.55,1575.0,2620052.55,-1575.0,0.0
+low (0.0-0.4),88,Promise Integrity Agent,2876058.8,137570.0,2738488.8,116861.25,118436.25
+mid (0.4-0.6),100,No-Intervention,3653008.65,0.0,3653008.65,0.0,-6840.2
+mid (0.4-0.6),100,Naive-Uniform,3660813.85,965.0,3659848.85,6840.2,0.0
+mid (0.4-0.6),100,Promise Integrity Agent,4086970.26,73975.0,4012995.26,359986.61,353146.41
+high (0.6-1.0),112,No-Intervention,4754524.21,0.0,4754524.21,0.0,-14169.67
+high (0.6-1.0),112,Naive-Uniform,4769088.88,395.0,4768693.88,14169.67,0.0
+high (0.6-1.0),112,Promise Integrity Agent,5206164.42,31895.0,5174269.42,419745.21,405575.54
