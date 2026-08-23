@@ -113,6 +113,20 @@ class AgentContext:
     # same draft_message(action_type, context) -> str interface, so
     # run_agent_cycle's call site doesn't need to know which one it has.
     draft_tool: Optional[object] = None
+    # --- Stage 10: §13 live-slice (real Razorpay test-mode API calls) ---
+    # Defaults (None / empty set/dict) preserve every existing test's fully
+    # simulated behavior unchanged -- a caller must opt an invoice into the
+    # live slice explicitly by both passing a constructed
+    # integration.razorpay_client.RazorpayClient AND listing the invoice_id
+    # here. Untyped as `object` for the same reason draft_tool is: the call
+    # site only needs the 5 §13 methods, not a hard import-time dependency.
+    razorpay_client: Optional[object] = None
+    live_slice_invoice_ids: set[str] = field(default_factory=set)
+    # invoice_id -> Razorpay payment_link_id, the live counterpart of
+    # pending_promise_truth: state that isn't a simulator ground-truth
+    # value, but still doesn't belong in the frozen §2 schema (no
+    # payment-link-id column exists), so it's tracked here instead.
+    live_slice_payment_links: dict[str, str] = field(default_factory=dict)
 
 
 def load_state(invoice_id: str, ctx: AgentContext) -> InvoiceAgentState:
@@ -324,6 +338,83 @@ def _dispatch(invoice_id: str, action: str, message: str, outcome, ctx: AgentCon
     ctx.session.commit()
 
 
+def _dispatch_live_payment_link(invoice: Invoice, ctx: AgentContext, audit: AuditLogTool, as_of: dt.datetime) -> None:
+    """link_resend on a live-slice invoice: create a REAL Razorpay Payment
+    Link via ctx.razorpay_client instead of going through the simulated
+    _dispatch path. Proving this call genuinely reaches Razorpay's
+    test-mode API -- not standing in for it -- is the entire point of §13's
+    live slice, so this is a parallel code path, not a parameterization of
+    _dispatch.
+    """
+    invoice_id = invoice.invoice_id
+    link = ctx.razorpay_client.create_payment_link({
+        "amount": int(round(invoice.amount * 100)),  # Razorpay amounts are in paise
+        "currency": "INR",
+        "description": f"Payment for invoice {invoice_id}",
+        "reference_id": invoice_id,
+        "notify": {"sms": False, "email": False},
+        "reminder_enable": False,
+    })
+    ctx.live_slice_payment_links[invoice_id] = link["id"]
+
+    message = f"Please complete your payment for invoice {invoice_id} using this secure link: {link['short_url']}"
+    ctx.session.add(Communication(
+        comm_id=f"comm-{invoice_id}-{ctx.day}", invoice_id=invoice_id, channel="email",
+        timestamp=as_of, message_type="link_resend", message_text=message, dispatched_by="agent",
+        response_received=False, response_text=None,
+    ))
+    ctx.session.commit()
+
+    audit.write(AuditEvent(
+        invoice_id=invoice_id, customer_id=invoice.customer_id, step="act",
+        input_snapshot={"amount": invoice.amount, "reference_id": invoice_id},
+        model_output={"razorpay_payment_link_id": link["id"], "short_url": link["short_url"], "status": link.get("status")},
+        decision="link_resend", rationale_code="LIVE_SLICE_REAL_PAYMENT_LINK_CREATED",
+        constraint_triggered=None, executed_action="link_resend", human_approval_required=False,
+        timestamp=as_of,
+    ))
+
+
+def _verify_live_slice_payment(invoice: Invoice, ctx: AgentContext, audit: AuditLogTool, as_of: dt.datetime) -> None:
+    """Live-slice invoices are settled by a real human completing a real
+    Razorpay test-mode checkout, not by the simulator's potential-outcomes
+    model -- this is the live counterpart to _settle_payment_if_any.
+    Instead of reading a pre-computed simulated outcome, it makes a real
+    fetch_payment_link call and only marks the invoice paid once Razorpay
+    itself reports the link as paid.
+    """
+    invoice_id = invoice.invoice_id
+    link_id = ctx.live_slice_payment_links.get(invoice_id)
+    if link_id is None or ctx.razorpay_client is None:
+        return  # no live payment link created yet for this invoice
+
+    link = ctx.razorpay_client.fetch_payment_link(link_id)
+    if link.get("status") != "paid":
+        return  # not yet completed (manual test-mode checkout pending) -- nothing to verify this cycle
+
+    payments = link.get("payments") or []
+    payment_id = payments[0]["payment_id"] if payments else None
+    payment = ctx.razorpay_client.fetch_payment(payment_id) if payment_id else {}
+
+    ctx.session.add(Payment(
+        payment_id=f"pay-{invoice_id}-live", invoice_id=invoice_id,
+        amount_paid=(payment.get("amount") or link.get("amount_paid") or 0) / 100.0,
+        payment_date=as_of, partial_flag=False,
+        razorpay_payment_id=payment_id,
+    ))
+    invoice.status = "paid"
+    ctx.session.commit()
+
+    audit.write(AuditEvent(
+        invoice_id=invoice_id, customer_id=invoice.customer_id, step="verify",
+        input_snapshot={"razorpay_payment_link_id": link_id, "razorpay_payment_id": payment_id},
+        model_output={"payment_link": link, "payment": payment},
+        decision="live_payment_confirmed", rationale_code="LIVE_SLICE_PAYMENT_CONFIRMED",
+        constraint_triggered=None, executed_action=None, human_approval_required=False,
+        timestamp=as_of,
+    ))
+
+
 def _settle_payment_if_any(invoice: Invoice, outcome, ctx: AgentContext, as_of: dt.datetime) -> None:
     if not outcome.will_pay_within_N:
         return
@@ -354,6 +445,15 @@ def run_agent_cycle(invoice_id: str, ctx: AgentContext) -> None:
             timestamp=as_of,
         ))
         return
+
+    # --- live-slice: check real Razorpay payment status before anything
+    # else this cycle (§13) -- if a prior link_resend's link has now been
+    # paid, settle it and stop; running detect/diagnose/decide/act against
+    # an invoice Razorpay already reports as paid would be stale ---
+    if invoice_id in ctx.live_slice_invoice_ids:
+        _verify_live_slice_payment(invoice, ctx, audit, as_of)
+        if invoice.status == "paid":
+            return
 
     # --- verify: resolve any promise whose grace period has elapsed ---
     _verify_pending_promises(invoice_id, customer_id, ctx, audit, as_of)
@@ -427,7 +527,14 @@ def run_agent_cycle(invoice_id: str, ctx: AgentContext) -> None:
         outcome = ctx.customer_model.realize(auth.action, ctx.day)
         executed_action = auth.action
 
-        if auth.action != "none":
+        is_live_link_resend = (
+            auth.action == "link_resend"
+            and invoice_id in ctx.live_slice_invoice_ids
+            and ctx.razorpay_client is not None
+        )
+        if is_live_link_resend:
+            _dispatch_live_payment_link(invoice, ctx, audit, as_of)
+        elif auth.action != "none":
             draft_tool = ctx.draft_tool or LLMDraftTool()
             message = draft_tool.draft_message(auth.action, {"invoice_id": invoice_id, "customer_id": customer_id})
             _dispatch(invoice_id, auth.action, message, outcome, ctx, as_of)
@@ -435,7 +542,12 @@ def run_agent_cycle(invoice_id: str, ctx: AgentContext) -> None:
         if outcome.will_promise:
             _record_promise(invoice_id, customer_id, auth.action, ctx, outcome, audit, as_of)
 
-        _settle_payment_if_any(invoice, outcome, ctx, as_of)
+        # Live-slice invoices are settled by _verify_live_slice_payment
+        # (real Razorpay status) at the top of a later cycle, never by the
+        # simulator's potential-outcomes model -- settling here off a
+        # simulated outcome would fake the very thing §13 is meant to prove.
+        if invoice_id not in ctx.live_slice_invoice_ids:
+            _settle_payment_if_any(invoice, outcome, ctx, as_of)
 
     audit.write(AuditEvent(
         invoice_id=invoice_id, customer_id=customer_id, step="act",
