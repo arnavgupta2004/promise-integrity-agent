@@ -6,6 +6,7 @@ lightgbm==4.5.*
 scikit-learn==1.5.*
 pandas==2.2.*
 numpy==1.26.*
+joblib==1.4.*             # model artifact persistence (models/train.py, models/propensity_model.py) -- transitive via scikit-learn but imported directly, so pinned explicitly
 razorpay==1.4.*          # official Python SDK
 anthropic==0.39.*        # LLM calls (structured output via tool-use/JSON schema)
 pytest==8.3.*
