@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Promise Integrity Agent — Dashboard</title>
+<style>
+  :root {
+    --bg: #f7f7f5; --panel: #ffffff; --border: #e2e0da; --text: #1c1c1a; --muted: #6b6a63;
+    --accent: #b5461f; --accent-soft: #f3e2d9;
+    --risk-high: #b5461f; --risk-mid: #c2882b; --risk-low: #3f7a4e;
+    --step-detect: #7a7a72; --step-diagnose: #7a7a72; --step-decide: #2f5f8a; --step-act: #7a3f9d; --step-verify: #3f7a4e; --step-reassess: #7a7a72;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; background: var(--bg); color: var(--text); }
+  header { padding: 20px 32px 0; }
+  h1 { font-size: 19px; font-weight: 600; margin: 0 0 2px; }
+  .subtitle { color: var(--muted); font-size: 13px; margin-bottom: 16px; }
+  nav { display: flex; gap: 4px; border-bottom: 1px solid var(--border); padding: 0 32px; }
+  nav button { background: none; border: none; padding: 10px 16px; font-size: 13.5px; font-weight: 500; color: var(--muted); cursor: pointer; border-bottom: 2px solid transparent; }
+  nav button.active { color: var(--accent); border-bottom-color: var(--accent); }
+  main { padding: 24px 32px 48px; max-width: 1100px; margin: 0 auto; }
+  .view { display: none; }
+  .view.active { display: block; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; margin-bottom: 22px; }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 14px 16px; }
+  .card .label { font-size: 11.5px; color: var(--muted); text-transform: uppercase; letter-spacing: .03em; margin-bottom: 6px; }
+  .card .value { font-size: 21px; font-weight: 600; }
+  .card .sub { font-size: 12px; color: var(--muted); margin-top: 3px; }
+  section { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 18px 20px; margin-bottom: 18px; }
+  section h2 { font-size: 14px; margin: 0 0 14px; }
+  .risk-row { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; font-size: 13px; }
+  .risk-row .tier-label { width: 190px; flex-shrink: 0; }
+  .risk-row .bar-track { flex: 1; background: #eeece6; border-radius: 4px; height: 20px; overflow: hidden; }
+  .risk-row .bar-fill { height: 100%; border-radius: 4px 0 0 4px; }
+  .risk-row .tier-figs { width: 190px; flex-shrink: 0; text-align: right; color: var(--muted); }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--border); }
+  th { color: var(--muted); font-weight: 500; font-size: 11.5px; text-transform: uppercase; letter-spacing: .02em; }
+  tr:last-child td { border-bottom: none; }
+  .num { text-align: right; font-variant-numeric: tabular-nums; }
+  select { font-size: 13px; padding: 7px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--panel); min-width: 340px; }
+  .invoice-meta { display: flex; gap: 22px; flex-wrap: wrap; margin: 14px 0 0; font-size: 13px; color: var(--muted); }
+  .invoice-meta b { color: var(--text); font-weight: 600; }
+  .timeline { margin-top: 18px; }
+  .event { display: flex; gap: 14px; padding: 12px 0; border-top: 1px solid var(--border); }
+  .event:first-child { border-top: none; }
+  .event .when { width: 150px; flex-shrink: 0; font-size: 11.5px; color: var(--muted); padding-top: 2px; }
+  .event .body { flex: 1; }
+  .badge { display: inline-block; font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .03em; padding: 2px 7px; border-radius: 4px; color: #fff; margin-right: 8px; }
+  .row-line { font-size: 13px; margin-bottom: 6px; }
+  .row-line .arrow { color: var(--muted); margin: 0 4px; }
+  .approval-flag { display: inline-block; font-size: 11px; font-weight: 600; color: #fff; background: var(--risk-high); padding: 1px 7px; border-radius: 4px; margin-left: 8px; }
+  .explanations { margin: 6px 0 0; padding-left: 18px; font-size: 12.5px; color: var(--muted); }
+  .explanations li { margin-bottom: 2px; }
+  .explanations code { background: #f1efe9; padding: 1px 4px; border-radius: 3px; font-size: 11px; color: var(--text); }
+  .chart { display: flex; align-items: flex-end; gap: 28px; height: 200px; padding: 10px 10px 0; }
+  .chart .col { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; height: 100%; }
+  .chart .bar { width: 56px; border-radius: 5px 5px 0 0; background: var(--accent); }
+  .chart .bar-value { font-size: 12px; font-weight: 600; margin-bottom: 4px; }
+  .chart .bar-label { font-size: 12px; color: var(--muted); margin-top: 8px; text-align: center; }
+  .loading, .error { color: var(--muted); font-size: 13px; padding: 20px 0; }
+  .error { color: var(--risk-high); }
+  footer.note { font-size: 11.5px; color: var(--muted); margin-top: 6px; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Promise Integrity Agent</h1>
+  <div class="subtitle">Live dashboard — every figure below is read from the real DB / eval output, nothing mocked.</div>
+</header>
+
+<nav>
+  <button class="tab-btn active" data-view="portfolio">Portfolio Risk</button>
+  <button class="tab-btn" data-view="audit">Invoice Audit Trail</button>
+  <button class="tab-btn" data-view="eval">3-Arm Comparison</button>
+</nav>
+
+<main>
+
+  <div id="view-portfolio" class="view active">
+    <div id="portfolio-content" class="loading">Loading…</div>
+  </div>
+
+  <div id="view-audit" class="view">
+    <section>
+      <h2>Select an invoice</h2>
+      <select id="invoice-select"></select>
+    </section>
+    <div id="audit-content" class="loading">Loading…</div>
+  </div>
+
+  <div id="view-eval" class="view">
+    <div id="eval-content" class="loading">Loading…</div>
+  </div>
+
+</main>
+
+<script>
+const DEFAULT_DEMO_INVOICE = "inv-batch-002-serial_promiser-0";
+const fmtINR = n => "₹" + Number(n).toLocaleString("en-IN", {maximumFractionDigits: 0});
+// Spelled-out month, explicit locale: toLocaleDateString() with no args
+// renders in whatever format the VIEWER's OS/browser locale happens to
+// use (DD/MM/YYYY on en-GB, MM/DD/YYYY on en-US, silently, with no visual
+// cue which one you're looking at) -- fine on the machine that built it,
+// misleading on a different one. Spelling the month out removes the
+// ambiguity entirely, everywhere, regardless of viewer locale.
+const fmtDate = iso => new Date(iso).toLocaleDateString("en-US", {day: "numeric", month: "short", year: "numeric"});
+const esc = s => (s ?? "").toString().replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+
+document.querySelectorAll(".tab-btn").forEach(btn => {
+  btn.addEventListener("click", () => {
+    document.querySelectorAll(".tab-btn").forEach(b => b.classList.remove("active"));
+    document.querySelectorAll(".view").forEach(v => v.classList.remove("active"));
+    btn.classList.add("active");
+    document.getElementById("view-" + btn.dataset.view).classList.add("active");
+  });
+});
+
+// ---------------------------------------------------------------- view 1
+async function loadPortfolio() {
+  const el = document.getElementById("portfolio-content");
+  try {
+    const data = await fetch("/api/portfolio").then(r => { if (!r.ok) throw new Error(r.status); return r.json(); });
+    const maxTierAmount = Math.max(...data.risk_tiers.map(t => t.amount), 1);
+    const tierColors = {high_risk: "var(--risk-high)", medium_risk: "var(--risk-mid)", low_risk: "var(--risk-low)"};
+    el.innerHTML = `
+      <div class="cards">
+        <div class="card"><div class="label">Total ₹ at risk</div><div class="value">${fmtINR(data.total_amount_at_risk)}</div><div class="sub">${data.unpaid_invoice_count} unpaid invoices</div></div>
+        <div class="card"><div class="label">Total ₹ recovered</div><div class="value">${fmtINR(data.total_amount_recovered)}</div><div class="sub">${data.paid_invoice_count} paid invoices</div></div>
+        <div class="card"><div class="label">Total invoices</div><div class="value">${data.total_invoices}</div></div>
+        <div class="card"><div class="label">As of</div><div class="value" style="font-size:15px">${fmtDate(data.as_of)}</div><div class="sub">latest audit-log timestamp in the DB</div></div>
+      </div>
+      <section>
+        <h2>Amount at risk by risk tier (live PRS score, same 0.4 / 0.6 bands as Stage 6's eval)</h2>
+        ${data.risk_tiers.map(t => `
+          <div class="risk-row">
+            <div class="tier-label">${esc(t.label)}</div>
+            <div class="bar-track"><div class="bar-fill" style="width:${(t.amount / maxTierAmount * 100).toFixed(1)}%; background:${tierColors[t.key]}"></div></div>
+            <div class="tier-figs">${t.count} inv · ${fmtINR(t.amount)}</div>
+          </div>`).join("")}
+      </section>
+      <section>
+        <h2>Unpaid invoices by status</h2>
+        <table>
+          <thead><tr><th>Status</th><th class="num">Count</th><th class="num">Amount</th></tr></thead>
+          <tbody>${data.by_status.map(s => `<tr><td>${esc(s.status)}</td><td class="num">${s.count}</td><td class="num">${fmtINR(s.amount)}</td></tr>`).join("")}</tbody>
+        </table>
+      </section>`;
+  } catch (e) {
+    el.innerHTML = `<div class="error">Failed to load portfolio data: ${esc(e.message)}</div>`;
+  }
+}
+
+// ---------------------------------------------------------------- view 2
+const STEP_COLORS = {detect: "var(--step-detect)", diagnose: "var(--step-diagnose)", decide: "var(--step-decide)", act: "var(--step-act)", verify: "var(--step-verify)", reassess: "var(--step-reassess)"};
+
+async function loadInvoiceList() {
+  const select = document.getElementById("invoice-select");
+  const invoices = await fetch("/api/invoices").then(r => r.json());
+  select.innerHTML = invoices.map(inv =>
+    `<option value="${esc(inv.invoice_id)}">${esc(inv.invoice_id)} — ${esc(inv.archetype)} — ₹${Math.round(inv.amount).toLocaleString("en-IN")} — ${esc(inv.status)}</option>`
+  ).join("");
+  const hasDefault = invoices.some(inv => inv.invoice_id === DEFAULT_DEMO_INVOICE);
+  select.value = hasDefault ? DEFAULT_DEMO_INVOICE : invoices[0]?.invoice_id;
+  select.addEventListener("change", () => loadAuditTrail(select.value));
+  if (select.value) loadAuditTrail(select.value);
+}
+
+async function loadAuditTrail(invoiceId) {
+  const el = document.getElementById("audit-content");
+  el.innerHTML = `<div class="loading">Loading…</div>`;
+  try {
+    const data = await fetch(`/api/invoices/${encodeURIComponent(invoiceId)}/audit-trail`).then(r => { if (!r.ok) throw new Error(r.status); return r.json(); });
+    const events = data.events.map(ev => `
+      <div class="event">
+        <div class="when">${ev.timestamp ? fmtDate(ev.timestamp) : ""}<br>seq ${ev.seq}</div>
+        <div class="body">
+          <div class="row-line">
+            <span class="badge" style="background:${STEP_COLORS[ev.step] || '#888'}">${esc(ev.step)}</span>
+            ${ev.decision ? `decision=<b>${esc(ev.decision)}</b>` : `<span style="color:var(--muted)">no decision this step</span>`}
+            ${ev.executed_action ? `<span class="arrow">→ executed</span><b>${esc(ev.executed_action)}</b>` : (ev.step === 'act' ? `<span class="arrow">→ executed</span><span style="color:var(--muted)">none</span>` : '')}
+            ${ev.human_approval_required ? `<span class="approval-flag">human approval required</span>` : ""}
+          </div>
+          ${ev.rationale_explanations.length ? `
+            <ul class="explanations">
+              ${ev.rationale_explanations.map(re => `<li><code>${esc(re.code)}</code> — ${esc(re.explanation)}</li>`).join("")}
+            </ul>` : ""}
+        </div>
+      </div>`).join("");
+    el.innerHTML = `
+      <section>
+        <h2>${esc(data.invoice_id)}</h2>
+        <div class="invoice-meta">
+          <span>Customer: <b>${esc(data.customer_id)}</b></span>
+          <span>Archetype: <b>${esc(data.archetype)}</b></span>
+          <span>Amount: <b>${fmtINR(data.amount)}</b></span>
+          <span>Status: <b>${esc(data.status)}</b></span>
+          <span>Events: <b>${data.event_count}</b></span>
+        </div>
+        <div class="timeline">${events}</div>
+      </section>`;
+  } catch (e) {
+    el.innerHTML = `<div class="error">Failed to load audit trail: ${esc(e.message)}</div>`;
+  }
+}
+
+// ---------------------------------------------------------------- view 3
+async function loadEval() {
+  const el = document.getElementById("eval-content");
+  try {
+    const [threeArm, byBand] = await Promise.all([
+      fetch("/api/eval/three-arm").then(r => { if (!r.ok) throw new Error(r.status); return r.json(); }),
+      fetch("/api/eval/by-prs-band").then(r => r.ok ? r.json() : {bands: []}),
+    ]);
+    const arms = threeArm.arms;
+    const maxNet = Math.max(...arms.map(a => Math.abs(a.net_recovery)), 1);
+    const bandsByArm = {};
+    byBand.bands.forEach(b => { (bandsByArm[b.prs_band] ||= []).push(b); });
+
+    el.innerHTML = `
+      <section>
+        <h2>Net recovery by arm (eval/results/table1_three_arm_comparison.csv)</h2>
+        <div class="chart">
+          ${arms.map(a => `
+            <div class="col">
+              <div class="bar-value">${fmtINR(a.net_recovery)}</div>
+              <div class="bar" style="height:${(a.net_recovery / maxNet * 160).toFixed(0)}px"></div>
+              <div class="bar-label">${esc(a.arm)}</div>
+            </div>`).join("")}
+        </div>
+      </section>
+      <section>
+        <h2>Full comparison</h2>
+        <table>
+          <thead><tr><th>Arm</th><th class="num">Total Recovered</th><th class="num">Cost</th><th class="num">Net Recovery</th><th class="num">Incr. vs No-Intervention</th><th class="num">Incr. vs Naive</th></tr></thead>
+          <tbody>${arms.map(a => `<tr>
+            <td>${esc(a.arm)}</td><td class="num">${fmtINR(a.total_recovered)}</td><td class="num">${fmtINR(a.cost)}</td>
+            <td class="num">${fmtINR(a.net_recovery)}</td><td class="num">${fmtINR(a.incremental_vs_no_intervention)}</td><td class="num">${fmtINR(a.incremental_vs_naive)}</td>
+          </tr>`).join("")}</tbody>
+        </table>
+      </section>
+      ${Object.keys(bandsByArm).length ? `
+      <section>
+        <h2>Net recovery by PRS band (eval/results/table1b_by_prs_band.csv)</h2>
+        <table>
+          <thead><tr><th>PRS Band</th><th>Arm</th><th class="num">n customers</th><th class="num">Net Recovery</th></tr></thead>
+          <tbody>${byBand.bands.map(b => `<tr><td>${esc(b.prs_band)}</td><td>${esc(b.arm)}</td><td class="num">${b.n_customers}</td><td class="num">${fmtINR(b.net_recovery)}</td></tr>`).join("")}</tbody>
+        </table>
+      </section>` : ""}`;
+  } catch (e) {
+    el.innerHTML = `<div class="error">Failed to load eval results: ${esc(e.message)}</div>`;
+  }
+}
+
+loadPortfolio();
+loadInvoiceList();
+loadEval();
+</script>
+</body>
+</html>
