@@ -59,7 +59,20 @@ from agent.tools import (
     PropensityModelTool,
 )
 
-TERMINAL_INVOICE_STATUSES = {"paid", "human_queue"}
+PENDING_APPROVAL_STATUS = "pending_human_approval"
+# Distinct from "human_queue" on purpose, not merged into it: human_queue
+# (rules 4/6) means the customer relationship itself has broken down enough
+# that a human needs to take over. pending_human_approval (rule 7) means
+# nothing about trust has broken -- the policy engine just won't let the
+# agent unilaterally send *this one class of action* on a high-value
+# invoice without sign-off. Conflating the two would make an audit-trail
+# reviewer unable to tell "this needs a human because we're worried about
+# them" from "this needs a human because of the dollar amount" without
+# reading rationale_code. Both share the exact same mechanical
+# stop-processing pattern (TERMINAL_INVOICE_STATUSES + the lightweight
+# ALREADY_TERMINAL detect-only skip), so the cost of keeping them separate
+# is one extra string constant, not a second code path.
+TERMINAL_INVOICE_STATUSES = {"paid", "human_queue", PENDING_APPROVAL_STATUS}
 DEFAULT_PROMISE_HORIZON_DAYS = 7  # how far out a captured promise's promised_date is set, absent a specific date
 
 Phase = Literal["detect", "diagnose", "decide", "act", "verify", "reassess", "closed"]
@@ -92,6 +105,14 @@ class AgentContext:
     propensity_model_tool: PropensityModelTool
     policy_config: PolicyConfig
     pending_promise_truth: dict[str, bool] = field(default_factory=dict)
+    # Injectable outreach-drafting tool. Defaults to None, meaning "use
+    # agent.tools's free Stage-7 stub" (preserves every existing test's
+    # zero-cost, deterministic behavior unchanged). Callers that want
+    # Stage 8's real Gemini-backed drafting (e.g. a live batch run) pass an
+    # agent.llm.draft.LLMDraftTool instance here instead -- both share the
+    # same draft_message(action_type, context) -> str interface, so
+    # run_agent_cycle's call site doesn't need to know which one it has.
+    draft_tool: Optional[object] = None
 
 
 def load_state(invoice_id: str, ctx: AgentContext) -> InvoiceAgentState:
@@ -381,6 +402,20 @@ def run_agent_cycle(invoice_id: str, ctx: AgentContext) -> None:
         invoice.status = "human_queue"
         ctx.session.commit()
         executed_action = "human_escalation"
+    elif auth.human_approval_required:
+        # Mirrors process_customer_reply's PROMISE_CAPTURED_AMOUNT_MISMATCH
+        # pattern exactly (that pathway is the reference implementation,
+        # not redesigned here): record what was PROPOSED via `decision`,
+        # never set executed_action, never dispatch. Applies regardless of
+        # whether auth.action is a real action or "none" -- the policy
+        # engine flagged this invoice/cycle as needing a human's eyes
+        # before the agent does *anything* further here, not just before
+        # it sends a message. Stops automation the same way human_escalation
+        # already does (PENDING_APPROVAL_STATUS is in TERMINAL_INVOICE_STATUSES),
+        # just tagged with a distinct status so a reviewer can tell why.
+        invoice.status = PENDING_APPROVAL_STATUS
+        ctx.session.commit()
+        executed_action = None
     else:
         context = {
             "issue_day": (invoice.issue_date - ctx.reference_start).days,
@@ -393,7 +428,8 @@ def run_agent_cycle(invoice_id: str, ctx: AgentContext) -> None:
         executed_action = auth.action
 
         if auth.action != "none":
-            message = LLMDraftTool().draft_message(auth.action, {"invoice_id": invoice_id, "customer_id": customer_id})
+            draft_tool = ctx.draft_tool or LLMDraftTool()
+            message = draft_tool.draft_message(auth.action, {"invoice_id": invoice_id, "customer_id": customer_id})
             _dispatch(invoice_id, auth.action, message, outcome, ctx, as_of)
 
         if outcome.will_promise:
