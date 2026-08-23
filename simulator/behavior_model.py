@@ -49,6 +49,18 @@ class PotentialOutcome:
     promise_kept: Optional[bool]
 
 
+@dataclass
+class DisputeOutcome:
+    """Stage 13: dispute_propensity, materialized. Action-independent
+    (unlike PotentialOutcome) -- a dispute arises from the customer's own
+    initiative, not from which action the agent/policy takes that day, so
+    it doesn't belong in the per-action outcome dict."""
+    invoice_id: str
+    will_dispute: bool
+    raised_day: Optional[int]      # absolute simulated day the dispute would be raised, if any
+    resolved_day: Optional[int]    # absolute simulated day it would resolve, if any (set whenever will_dispute is True)
+
+
 # ---------------------------------------------------------------------------
 # §5 mechanism constants. The contract's pseudocode only specifies direction
 # and relative magnitude ("small positive shift", "larger positive shift",
@@ -140,6 +152,21 @@ ACTION_PROMISE_WEIGHT = {
 # window (models "how much repeated contact reduces response").
 FATIGUE_RESPONSE_DAMPING = 0.5
 
+# --- Dispute lifecycle (Stage 13) ---
+# One-shot, per-invoice draw -- NOT a daily-compounding Bernoulli. Same
+# anti-resampling lesson the module comment above documents for payment
+# timing applies here: a fresh per-day dispute coin-flip would make
+# aggregate dispute rates depend on how many days an invoice stays open
+# (confounding archetypes with different avg_days_to_pay), not on
+# dispute_propensity itself. Instead: does this invoice EVER get disputed
+# (one draw, dispute_propensity used directly as the probability -- at
+# disputer's 0.35 vs every other archetype's 0.01-0.05, this alone gives a
+# 7-35x higher per-invoice dispute rate with no extra tuning), and if so,
+# WHEN it's raised and WHEN it resolves, both drawn once too.
+DISPUTE_RAISE_WINDOW_DAYS = 25.0     # a dispute, if any, is raised within this many days of invoice issue
+DISPUTE_RESOLUTION_MEAN_DAYS = 12.0  # mean days from raised -> resolved (long enough that DISPUTE_UNRESOLVED
+DISPUTE_RESOLUTION_STD_DAYS = 5.0    # is genuinely observable across several decide cycles, not resolved same-day)
+
 
 def _stable_seed(*parts: object) -> int:
     """Deterministic 63-bit seed derived from arbitrary hashable parts.
@@ -224,6 +251,7 @@ class CustomerBehaviorModel:
         self._cache: dict[tuple[str, int], dict[Action, PotentialOutcome]] = {}
         self._last_call: Optional[tuple[str, int]] = None
         self._baseline_payment_day: dict[str, float] = {}
+        self._dispute_cache: dict[str, DisputeOutcome] = {}
 
     def _get_baseline_payment_day(self, invoice_id: str, issue_day: int) -> float:
         """The fixed, per-invoice "would pay under action=none the whole
@@ -297,6 +325,33 @@ class CustomerBehaviorModel:
 
         self._cache[cache_key] = outcomes
         return outcomes
+
+    def dispute_outcome(self, invoice_id: str, issue_day: int) -> DisputeOutcome:
+        """Pure, deterministic, memoized -- same reproducibility contract
+        as generate_potential_outcomes: calling this again for the same
+        invoice_id reproduces the identical timeline, so eval/run_eval.py
+        and agent/state_machine.py's sync_dispute_state can each call it
+        independently, on different days, and still agree on when (if
+        ever) this invoice's dispute is raised/resolved.
+        """
+        if invoice_id in self._dispute_cache:
+            return self._dispute_cache[invoice_id]
+
+        rng = np.random.default_rng(_stable_seed(self.latent.customer_id, invoice_id, "dispute"))
+        will_dispute = bool(rng.random() < self.latent.dispute_propensity)
+        raised_day: Optional[int] = None
+        resolved_day: Optional[int] = None
+        if will_dispute:
+            raised_offset = rng.uniform(1.0, DISPUTE_RAISE_WINDOW_DAYS)
+            raised_day = issue_day + int(round(raised_offset))
+            resolution_delay = max(rng.normal(DISPUTE_RESOLUTION_MEAN_DAYS, DISPUTE_RESOLUTION_STD_DAYS), 1.0)
+            resolved_day = raised_day + int(round(resolution_delay))
+
+        outcome = DisputeOutcome(
+            invoice_id=invoice_id, will_dispute=will_dispute, raised_day=raised_day, resolved_day=resolved_day,
+        )
+        self._dispute_cache[invoice_id] = outcome
+        return outcome
 
     def realize(self, action: Action, day: int) -> PotentialOutcome:
         """Returns the single realized outcome for the action actually taken.

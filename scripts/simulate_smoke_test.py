@@ -177,6 +177,57 @@ def degrading_diagnostics(engine: SimulationEngine) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Dispute lifecycle (Stage 13) -- disputer archetype vs. the other 6
+# ---------------------------------------------------------------------------
+
+def dispute_diagnostics(engine: SimulationEngine, n_days: int) -> dict:
+    """CustomerBehaviorModel.dispute_outcome() is a pure function (no DB
+    involved), so it can be checked directly against every invoice the
+    "always none" run produced -- exactly like every other per-archetype
+    check in this file, no separate DB-backed run needed."""
+    stats = {a: {"n_invoices": 0, "n_disputed": 0, "n_resolved_within_window": 0} for a in ARCHETYPE_NAMES}
+    for inv in engine.invoices:
+        customer = engine.customers[inv.customer_id]
+        archetype = customer.latent.archetype
+        outcome = customer.dispute_outcome(inv.invoice_id, inv.issue_day)
+        stats[archetype]["n_invoices"] += 1
+        if outcome.will_dispute:
+            stats[archetype]["n_disputed"] += 1
+            if outcome.resolved_day is not None and outcome.resolved_day <= n_days:
+                stats[archetype]["n_resolved_within_window"] += 1
+
+    results = {}
+    for archetype, d in stats.items():
+        results[archetype] = {
+            "n_invoices": d["n_invoices"],
+            "n_disputed": d["n_disputed"],
+            "dispute_rate": d["n_disputed"] / d["n_invoices"] if d["n_invoices"] else 0.0,
+            "n_resolved_within_window": d["n_resolved_within_window"],
+            "resolved_fraction_of_disputed": (
+                d["n_resolved_within_window"] / d["n_disputed"] if d["n_disputed"] else float("nan")
+            ),
+        }
+    return results
+
+
+def print_dispute_table(results: dict) -> None:
+    header = (
+        f"{'archetype':<28}{'dispute_propensity':>19}{'n_invoices':>12}"
+        f"{'n_disputed':>12}{'dispute_rate':>14}{'resolved_in_window':>20}"
+    )
+    print(header)
+    print("-" * len(header))
+    for archetype in ARCHETYPE_NAMES:
+        r = results[archetype]
+        target_dp = ARCHETYPES[archetype]["dispute_propensity"]
+        resolved_str = f"{r['resolved_fraction_of_disputed']:.2f}" if r["n_disputed"] else "n/a"
+        print(
+            f"{archetype:<28}{target_dp:>19.2f}{r['n_invoices']:>12}"
+            f"{r['n_disputed']:>12}{r['dispute_rate']:>14.3f}{resolved_str:>20}"
+        )
+
+
+# ---------------------------------------------------------------------------
 # Run 2: always soft_reminder -- response-to-contact validation
 # ---------------------------------------------------------------------------
 
@@ -230,7 +281,8 @@ def print_contact_table(results: dict) -> None:
         print(f"{archetype:<28}{target_rp:>22.2f}{r['n_contacts']:>12}{r['response_rate']:>16.3f}")
 
 
-def run_assertions(none_results: dict, contact_results: dict, degrading_buckets: list[float]) -> None:
+def run_assertions(none_results: dict, contact_results: dict, degrading_buckets: list[float],
+                    dispute_results: dict) -> None:
     # --- Per-archetype target-range checks (not just pairwise) ---------
     for archetype in ARCHETYPE_NAMES:
         if archetype == "degrading":
@@ -282,6 +334,35 @@ def run_assertions(none_results: dict, contact_results: dict, degrading_buckets:
         "serial-promiser should still keep far fewer promises than model-citizen despite replying readily"
     )
 
+    # --- Stage 13: disputer archetype must generate meaningfully more
+    # disputes than every other archetype (dispute_rate, not raw count --
+    # rate is what dispute_propensity actually governs; raw count would be
+    # confounded by archetypes with different avg_days_to_pay issuing
+    # different numbers of recurring invoice cycles over the window), and a
+    # nonzero fraction of raised disputes must resolve within the window
+    # (not permanently open). ---
+    disputer_rate = dispute_results["disputer"]["dispute_rate"]
+    other_rates = {a: dispute_results[a]["dispute_rate"] for a in ARCHETYPE_NAMES if a != "disputer"}
+    highest_other = max(other_rates, key=other_rates.get)
+    assert disputer_rate > other_rates[highest_other] * 3, (
+        f"disputer archetype's dispute_rate ({disputer_rate:.3f}) should be at least 3x the highest "
+        f"of every other archetype's ({highest_other}: {other_rates[highest_other]:.3f}) -- "
+        f"§4's dispute_propensity=0.35 vs <=0.05 elsewhere implies a much larger gap than this"
+    )
+    for archetype, rate in other_rates.items():
+        assert disputer_rate > rate, f"disputer archetype's dispute_rate ({disputer_rate:.3f}) should exceed {archetype}'s ({rate:.3f})"
+
+    assert dispute_results["disputer"]["n_disputed"] > 0, "disputer archetype produced zero disputes -- dispute mechanism is broken"
+    resolved_fraction = dispute_results["disputer"]["resolved_fraction_of_disputed"]
+    assert resolved_fraction > 0.0, (
+        "disputer archetype's disputes never resolve within the simulation window -- every disputed "
+        "invoice would be permanently stuck in DISPUTE_UNRESOLVED, which is not a realistic dispute lifecycle"
+    )
+    assert resolved_fraction < 1.0 or dispute_results["disputer"]["n_disputed"] < 5, (
+        "every single disputer-archetype dispute resolved within the window -- suspicious for a "
+        "realistic lifecycle unless the disputed sample is too small to tell"
+    )
+
     print("\nAll per-archetype target-range and contact-response assertions passed.")
 
 
@@ -294,6 +375,10 @@ def main() -> None:
     print_none_table(none_results)
     degrading_buckets = degrading_diagnostics(none_engine)
 
+    print(f"\n\n=== Dispute lifecycle (Stage 13) -- {N_CUSTOMERS} customers, {N_DAYS}-day window ===\n")
+    dispute_results = dispute_diagnostics(none_engine, N_DAYS)
+    print_dispute_table(dispute_results)
+
     print(f"\n\n=== Run 2: always_soft_reminder policy ({N_CUSTOMERS} customers, {N_DAYS} days, seed={SEED}) ===\n")
     contact_customers = build_population(SEED, N_CUSTOMERS, id_prefix="contact")
     contact_engine = SimulationEngine(contact_customers, seed=SEED)
@@ -302,7 +387,7 @@ def main() -> None:
     print_contact_table(contact_results)
 
     print()
-    run_assertions(none_results, contact_results, degrading_buckets)
+    run_assertions(none_results, contact_results, degrading_buckets, dispute_results)
 
 
 if __name__ == "__main__":

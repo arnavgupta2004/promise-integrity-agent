@@ -45,7 +45,7 @@ from typing import Literal, Optional
 
 from sqlalchemy.orm import Session
 
-from backend.db import Communication, Invoice, Payment, Promise
+from backend.db import Communication, Dispute, Invoice, Payment, Promise
 from policy.constraints import PolicyConfig, PolicyState
 from simulator.behavior_model import CustomerBehaviorModel
 
@@ -127,6 +127,16 @@ class AgentContext:
     # value, but still doesn't belong in the frozen §2 schema (no
     # payment-link-id column exists), so it's tracked here instead.
     live_slice_payment_links: dict[str, str] = field(default_factory=dict)
+    # --- Stage 12: rule 2 (NO_CONTACT_HONORED) ---
+    # There is no "customer opted out of contact" column anywhere in the
+    # frozen §2 schema -- unlike rule 1 (dispute resolution), which the
+    # schema already models via the Dispute table, this genuinely has
+    # nowhere else to live. Same shape as live_slice_invoice_ids: a caller
+    # opts a customer in explicitly; default (empty set) preserves every
+    # existing test's behavior unchanged. Keyed by customer_id, not
+    # invoice_id, because a real do-not-contact request is a customer-level
+    # fact, not specific to one of their invoices.
+    no_contact_customer_ids: set[str] = field(default_factory=set)
 
 
 def load_state(invoice_id: str, ctx: AgentContext) -> InvoiceAgentState:
@@ -151,6 +161,47 @@ def load_state(invoice_id: str, ctx: AgentContext) -> InvoiceAgentState:
 
 def _as_of(ctx: AgentContext) -> dt.datetime:
     return ctx.reference_start + dt.timedelta(days=ctx.day)
+
+
+def sync_dispute_state(invoice: Invoice, customer_model: CustomerBehaviorModel, session: Session,
+                        as_of: dt.datetime, reference_start: dt.datetime) -> None:
+    """Stage 13: materializes CustomerBehaviorModel.dispute_outcome()'s
+    pure, simulator-generated dispute timeline into real Dispute rows /
+    Invoice.dispute_flag, the moment each simulated day crosses the
+    relevant threshold -- mirrors _settle_payment_if_any's pure-outcome-
+    to-DB-write pattern exactly (a simulator-side "will this happen, and
+    when" answer, materialized into the DB only once that day actually
+    arrives).
+
+    Exported (not underscore-prefixed): eval/run_eval.py's Agent arm calls
+    this SAME function (the contract's module rules explicitly permit
+    eval -> agent dependencies) rather than reimplementing dispute
+    materialization a second time with its own drift risk -- the same
+    reason rule 1/2's PolicyState derivation logic needs to stay identical
+    between the two call sites.
+    """
+    issue_day = (invoice.issue_date - reference_start).days
+    as_of_day = (as_of - reference_start).days
+    outcome = customer_model.dispute_outcome(invoice.invoice_id, issue_day)
+    if not outcome.will_dispute:
+        return
+
+    existing = session.query(Dispute).filter(Dispute.invoice_id == invoice.invoice_id).first()
+    if existing is None:
+        if as_of_day >= outcome.raised_day:
+            session.add(Dispute(
+                dispute_id=f"disp-{invoice.invoice_id}", invoice_id=invoice.invoice_id,
+                raised_date=reference_start + dt.timedelta(days=outcome.raised_day),
+                reason="simulated_dispute", resolved=False,
+            ))
+            invoice.dispute_flag = True
+            session.commit()
+        return
+
+    if not existing.resolved and as_of_day >= outcome.resolved_day:
+        existing.resolved = True
+        existing.resolution_date = reference_start + dt.timedelta(days=outcome.resolved_day)
+        session.commit()
 
 
 def _verify_pending_promises(invoice_id: str, customer_id: str, ctx: AgentContext, audit: AuditLogTool, as_of: dt.datetime) -> None:
@@ -194,12 +245,22 @@ def _build_policy_state(invoice: Invoice, features: dict, ctx: AgentContext, as_
         .filter(Communication.invoice_id == invoice.invoice_id, Communication.dispatched_by == "agent")
         .count()
     )
+    # Rule 1 (DISPUTE_UNRESOLVED): dispute_resolved is derived from the real
+    # Dispute table (frozen §2 schema already has it -- raised_date/resolved
+    # -- it just wasn't being read here before Stage 12). A dispute-flagged
+    # invoice with no open (resolved=False) Dispute row counts as resolved;
+    # dispute_flag=False makes this value irrelevant to rule 1 either way.
+    unresolved_dispute = (
+        ctx.session.query(Dispute)
+        .filter(Dispute.invoice_id == invoice.invoice_id, Dispute.resolved.is_(False))
+        .first()
+    )
     return PolicyState(
         invoice_amount=invoice.amount,
-        # Stage 1 doesn't model disputes or an opt-out concept -- honestly
-        # flagged here as it was in models/train.py and eval/run_eval.py:
-        # rules 1/2 never fire in this simulated environment.
-        dispute_flag=bool(invoice.dispute_flag), dispute_resolved=True, no_contact_requested=False,
+        dispute_flag=bool(invoice.dispute_flag), dispute_resolved=unresolved_dispute is None,
+        # Rule 2 (NO_CONTACT_HONORED): see AgentContext.no_contact_customer_ids
+        # -- the frozen schema has no column for this, so it's tracked there.
+        no_contact_requested=invoice.customer_id in ctx.no_contact_customer_ids,
         active_promise_flag=features["active_promise_flag"],
         days_until_promised_date=features["days_until_promised_date"],
         broken_promise_streak=features["broken_promise_streak"],
@@ -434,6 +495,20 @@ def run_agent_cycle(invoice_id: str, ctx: AgentContext) -> None:
     if invoice is None:
         raise ValueError(f"unknown invoice_id: {invoice_id}")
     customer_id = invoice.customer_id
+
+    # --- Stage 13: materialize the simulator's dispute timeline (if any)
+    # for this invoice. Deliberately BEFORE the terminal-state short-circuit
+    # below, not after: DISPUTE_UNRESOLVED (rule 1) forces human_escalation
+    # the SAME cycle a dispute is raised, which makes the invoice terminal
+    # immediately -- if this call sat after the terminal check (like the
+    # live-slice one below), every later cycle would return before ever
+    # reaching it again, and Dispute.resolved could structurally never
+    # become True for ANY invoice, no matter how much simulated time
+    # passed. Running it here means a dispute can still resolve after
+    # escalation (a human takes over the actual resolution; the agent
+    # doesn't act on it further either way, but the DB correctly reflects
+    # a real dispute lifecycle instead of "always open forever").
+    sync_dispute_state(invoice, ctx.customer_model, ctx.session, as_of, ctx.reference_start)
 
     # --- terminal-state short-circuit (Stage 6 fix) ---
     if invoice.status in TERMINAL_INVOICE_STATUSES:

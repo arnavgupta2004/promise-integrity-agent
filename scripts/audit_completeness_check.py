@@ -144,17 +144,27 @@ class ResilientDraftTool:
 
 
 def run_batch(session, customers, invoice_ids, n_days: int, draft_tool, extract_tool,
-              inject_amount_mismatch_for: str | None = None) -> ResilientDraftTool:
+              inject_amount_mismatch_for: str | None = None,
+              no_contact_customer_id: str | None = None) -> ResilientDraftTool:
     model = PropensityModel()
     propensity_tool = PropensityModelTool(model)
     pending_promise_truth: dict[str, bool] = {}
     resilient_draft = ResilientDraftTool(draft_tool) if not isinstance(draft_tool, ResilientDraftTool) else draft_tool
+    # Explicit, guaranteed NO_CONTACT_HONORED example (Stage 12): like
+    # inject_amount_mismatch_for below, this batch's simulated customers
+    # have no real "opted out of contact" concept of their own -- there's
+    # no data anywhere that makes rule 2 fire on its own. One customer is
+    # deliberately flagged here so the completeness sweep actually observes
+    # rule 2 at least once, the same way the amount-mismatch example makes
+    # Stage 8's extraction path observable.
+    no_contact_customer_ids = {no_contact_customer_id} if no_contact_customer_id else set()
 
     def make_ctx(day: int, customer_id: str) -> AgentContext:
         return AgentContext(
             day=day, reference_start=REFERENCE_START, session=session,
             customer_model=customers[customer_id], propensity_model_tool=propensity_tool,
             policy_config=CONFIG, pending_promise_truth=pending_promise_truth, draft_tool=resilient_draft,
+            no_contact_customer_ids=no_contact_customer_ids,
         )
 
     # Explicit, guaranteed amount-mismatch example (Stage 8's extraction
@@ -409,11 +419,14 @@ def main() -> None:
     print(f"    (persistent DB at {DB_PATH} -- survives a quota-wall crash, not in-memory)\n")
     session, customers, invoice_ids = build_batch(seed=123, n_invoices=N_INVOICES, db_path=DB_PATH)
     mismatch_invoice_id = invoice_ids[0]
+    no_contact_invoice = session.get(Invoice, invoice_ids[1])
+    no_contact_customer_id = no_contact_invoice.customer_id
 
     resilient_draft = run_batch(
         session, customers, invoice_ids, n_days=N_DAYS,
         draft_tool=RealLLMDraftTool(), extract_tool=LLMExtractTool(),
         inject_amount_mismatch_for=mismatch_invoice_id,
+        no_contact_customer_id=no_contact_customer_id,
     )
     print(f"\nDrafting summary: {resilient_draft.n_real} real LLM calls, {resilient_draft.n_fallback} stub fallbacks"
           f"{' (degraded partway through due to a quota/API wall)' if resilient_draft.degraded else ''}.\n")

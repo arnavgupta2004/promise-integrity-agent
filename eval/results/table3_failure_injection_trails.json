@@ -1,0 +1,256 @@
+{
+  "Dispute-stop": {
+    "passed": true,
+    "rule_under_test": "DISPUTE_UNRESOLVED (rule 1)",
+    "notes": "",
+    "audit_trail": [
+      {
+        "log_id": "audit-inv-scn-dispute-01-0-detect-1",
+        "seq": 1,
+        "timestamp": "2025-01-01T00:00:00",
+        "step": "detect",
+        "decision": null,
+        "executed_action": null,
+        "rationale_code": null,
+        "constraint_triggered": null,
+        "human_approval_required": false
+      },
+      {
+        "log_id": "audit-inv-scn-dispute-01-0-diagnose-2",
+        "seq": 2,
+        "timestamp": "2025-01-01T00:00:00",
+        "step": "diagnose",
+        "decision": null,
+        "executed_action": null,
+        "rationale_code": null,
+        "constraint_triggered": null,
+        "human_approval_required": false
+      },
+      {
+        "log_id": "audit-inv-scn-dispute-01-0-decide-3",
+        "seq": 3,
+        "timestamp": "2025-01-01T00:00:00",
+        "step": "decide",
+        "decision": "human_escalation",
+        "executed_action": null,
+        "rationale_code": "DISPUTE_UNRESOLVED",
+        "constraint_triggered": "DISPUTE_UNRESOLVED",
+        "human_approval_required": false
+      },
+      {
+        "log_id": "audit-inv-scn-dispute-01-0-act-4",
+        "seq": 4,
+        "timestamp": "2025-01-01T00:00:00",
+        "step": "act",
+        "decision": "human_escalation",
+        "executed_action": "human_escalation",
+        "rationale_code": "DISPUTE_UNRESOLVED",
+        "constraint_triggered": "DISPUTE_UNRESOLVED",
+        "human_approval_required": false
+      },
+      {
+        "log_id": "audit-inv-scn-dispute-01-0-reassess-5",
+        "seq": 5,
+        "timestamp": "2025-01-01T00:00:00",
+        "step": "reassess",
+        "decision": null,
+        "executed_action": null,
+        "rationale_code": null,
+        "constraint_triggered": null,
+        "human_approval_required": false
+      }
+    ]
+  },
+  "No-contact-request honored": {
+    "passed": true,
+    "rule_under_test": "NO_CONTACT_HONORED (rule 2)",
+    "notes": "",
+    "audit_trail": [
+      {
+        "log_id": "audit-inv-scn-nocontact-01-0-detect-6",
+        "seq": 6,
+        "timestamp": "2025-01-01T00:00:00",
+        "step": "detect",
+        "decision": null,
+        "executed_action": null,
+        "rationale_code": null,
+        "constraint_triggered": null,
+        "human_approval_required": false
+      },
+      {
+        "log_id": "audit-inv-scn-nocontact-01-0-diagnose-7",
+        "seq": 7,
+        "timestamp": "2025-01-01T00:00:00",
+        "step": "diagnose",
+        "decision": null,
+        "executed_action": null,
+        "rationale_code": null,
+        "constraint_triggered": null,
+        "human_approval_required": false
+      },
+      {
+        "log_id": "audit-inv-scn-nocontact-01-0-decide-8",
+        "seq": 8,
+        "timestamp": "2025-01-01T00:00:00",
+        "step": "decide",
+        "decision": "none",
+        "executed_action": null,
+        "rationale_code": "NO_CONTACT_HONORED",
+        "constraint_triggered": "NO_CONTACT_HONORED",
+        "human_approval_required": false
+      },
+      {
+        "log_id": "audit-inv-scn-nocontact-01-0-act-9",
+        "seq": 9,
+        "timestamp": "2025-01-01T00:00:00",
+        "step": "act",
+        "decision": "none",
+        "executed_action": "none",
+        "rationale_code": "NO_CONTACT_HONORED",
+        "constraint_triggered": "NO_CONTACT_HONORED",
+        "human_approval_required": false
+      },
+      {
+        "log_id": "audit-inv-scn-nocontact-01-0-reassess-10",
+        "seq": 10,
+        "timestamp": "2025-01-01T00:00:00",
+        "step": "reassess",
+        "decision": null,
+        "executed_action": null,
+        "rationale_code": null,
+        "constraint_triggered": null,
+        "human_approval_required": false
+      }
+    ]
+  },
+  "Broken-promise-streak escalation": {
+    "passed": true,
+    "rule_under_test": "PROMISE_STREAK_EXCEEDED (rule 4)",
+    "notes": "",
+    "audit_trail": [
+      {
+        "log_id": "audit-inv-scn-streak-01-0-detect-11",
+        "seq": 11,
+        "timestamp": "2025-01-01T00:00:00",
+        "step": "detect",
+        "decision": null,
+        "executed_action": null,
+        "rationale_code": null,
+        "constraint_triggered": null,
+        "human_approval_required": false
+      },
+      {
+        "log_id": "audit-inv-scn-streak-01-0-diagnose-12",
+        "seq": 12,
+        "timestamp": "2025-01-01T00:00:00",
+        "step": "diagnose",
+        "decision": null,
+        "executed_action": null,
+        "rationale_code": null,
+        "constraint_triggered": null,
+        "human_approval_required": false
+      },
+      {
+        "log_id": "audit-inv-scn-streak-01-0-decide-13",
+        "seq": 13,
+        "timestamp": "2025-01-01T00:00:00",
+        "step": "decide",
+        "decision": "human_escalation",
+        "executed_action": null,
+        "rationale_code": "PROMISE_STREAK_EXCEEDED",
+        "constraint_triggered": "PROMISE_STREAK_EXCEEDED",
+        "human_approval_required": false
+      },
+      {
+        "log_id": "audit-inv-scn-streak-01-0-act-14",
+        "seq": 14,
+        "timestamp": "2025-01-01T00:00:00",
+        "step": "act",
+        "decision": "human_escalation",
+        "executed_action": "human_escalation",
+        "rationale_code": "PROMISE_STREAK_EXCEEDED",
+        "constraint_triggered": "PROMISE_STREAK_EXCEEDED",
+        "human_approval_required": false
+      },
+      {
+        "log_id": "audit-inv-scn-streak-01-0-reassess-15",
+        "seq": 15,
+        "timestamp": "2025-01-01T00:00:00",
+        "step": "reassess",
+        "decision": null,
+        "executed_action": null,
+        "rationale_code": null,
+        "constraint_triggered": null,
+        "human_approval_required": false
+      }
+    ]
+  },
+  "Ambiguous reply: extraction refuses to fabricate": {
+    "passed": false,
+    "rule_under_test": "NO_COMMITMENT_DETECTED or EXTRACTION_BELOW_CONFIDENCE_FLOOR (\u00a711 extraction, Stage 8)",
+    "notes": "SKIPPED/ERROR -- live Gemini call unavailable: ClientError: 429 RESOURCE_EXHAUSTED. {'error': {'code': 429, 'message': 'You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits. To monitor your current usage, head to: https://ai.dev/rate-limit. ",
+    "audit_trail": []
+  },
+  "High-value invoice requires human approval": {
+    "passed": true,
+    "rule_under_test": "HIGH_VALUE_REQUIRES_APPROVAL (rule 7)",
+    "notes": "",
+    "audit_trail": [
+      {
+        "log_id": "audit-inv-scn-highvalue-01-0-detect-16",
+        "seq": 16,
+        "timestamp": "2025-01-01T00:00:00",
+        "step": "detect",
+        "decision": null,
+        "executed_action": null,
+        "rationale_code": null,
+        "constraint_triggered": null,
+        "human_approval_required": false
+      },
+      {
+        "log_id": "audit-inv-scn-highvalue-01-0-diagnose-17",
+        "seq": 17,
+        "timestamp": "2025-01-01T00:00:00",
+        "step": "diagnose",
+        "decision": null,
+        "executed_action": null,
+        "rationale_code": null,
+        "constraint_triggered": null,
+        "human_approval_required": false
+      },
+      {
+        "log_id": "audit-inv-scn-highvalue-01-0-decide-18",
+        "seq": 18,
+        "timestamp": "2025-01-01T00:00:00",
+        "step": "decide",
+        "decision": "none",
+        "executed_action": null,
+        "rationale_code": "HIGH_VALUE_REQUIRES_APPROVAL,EIV_MAX",
+        "constraint_triggered": "HIGH_VALUE_REQUIRES_APPROVAL",
+        "human_approval_required": true
+      },
+      {
+        "log_id": "audit-inv-scn-highvalue-01-0-act-19",
+        "seq": 19,
+        "timestamp": "2025-01-01T00:00:00",
+        "step": "act",
+        "decision": "none",
+        "executed_action": null,
+        "rationale_code": "HIGH_VALUE_REQUIRES_APPROVAL,EIV_MAX",
+        "constraint_triggered": "HIGH_VALUE_REQUIRES_APPROVAL",
+        "human_approval_required": true
+      },
+      {
+        "log_id": "audit-inv-scn-highvalue-01-0-reassess-20",
+        "seq": 20,
+        "timestamp": "2025-01-01T00:00:00",
+        "step": "reassess",
+        "decision": null,
+        "executed_action": null,
+        "rationale_code": null,
+        "constraint_triggered": null,
+        "human_approval_required": false
+      }
+    ]
+  }
+}

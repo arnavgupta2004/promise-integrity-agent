@@ -55,7 +55,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-from backend.db import Communication, Invoice, Promise
+from agent.state_machine import sync_dispute_state
+from backend.db import Communication, Dispute, Invoice, Promise
 from features.feature_engine import build_feature_vector, compute_prs
 from models.propensity_model import PropensityModel
 from models.train import make_db_session, seed_customers, sync_realized_day
@@ -134,6 +135,26 @@ def naive_uniform_policy(invoice: SimInvoice, day: int, context: dict) -> str:
     return "none"
 
 
+def sync_dispute_state_eval(session, engine: SimulationEngine, day: int) -> None:
+    """Stage 13: the Agent arm's counterpart to agent/state_machine.py's
+    own per-cycle sync_dispute_state call -- same function, called once per
+    open invoice per day, so the disputer archetype's dispute lifecycle is
+    identical whether an invoice is being driven by run_agent_cycle (the
+    live loop / Stage 9 batch) or this eval harness. The other two arms
+    (No-Intervention, Naive-Uniform) never sync anything to the DB at all
+    (see run_no_intervention/run_naive_uniform) and don't need this either,
+    since disputes are a policy-relevant DB concept, not a dollar-outcome one.
+    """
+    as_of = REFERENCE_START + dt.timedelta(days=day)
+    for inv in engine.invoices:
+        if inv.status != "open" or day < inv.issue_day:
+            continue
+        db_invoice = session.get(Invoice, inv.invoice_id)
+        if db_invoice is None:
+            continue  # not yet synced this cycle -- sync_new_invoices_eval runs first, so this shouldn't happen
+        sync_dispute_state(db_invoice, engine.customers[inv.customer_id], session, as_of, REFERENCE_START)
+
+
 def sync_new_invoices_eval(session, engine: SimulationEngine, synced_ids: set[str]) -> None:
     for inv in engine.invoices:
         if inv.invoice_id in synced_ids:
@@ -150,10 +171,15 @@ def sync_new_invoices_eval(session, engine: SimulationEngine, synced_ids: set[st
 def make_agent_policy(session, model: PropensityModel, config: PolicyConfig,
                        decision_records: list, escalation_records: list):
     """Real Stage 4 select_action() (hard constraints -> EIV over Stage 3's
-    real PropensityModel). Stage 1 doesn't model disputes or an opt-out
-    concept, so dispute_flag/no_contact_requested are always False here --
-    same honestly-flagged gap as models/train.py, meaning rules 1/2 never
-    fire in this eval; only rules 3-8 are exercised.
+    real PropensityModel). dispute_flag/dispute_resolved are now derived
+    from real DB state (Stage 13: sync_dispute_state_eval populates
+    Invoice.dispute_flag/the Dispute table each day before this runs) --
+    rule 1 can genuinely fire here. no_contact_requested remains
+    hardcoded False: Stage 1 still has no opt-out concept anywhere in the
+    simulator, so unlike dispute_flag there's no real per-customer signal
+    to derive it from here (rule 2 is exercised via eval/scenarios.py at
+    the agent-loop level instead, where AgentContext.no_contact_customer_ids
+    exists for exactly this purpose).
     """
     def policy_fn(invoice: SimInvoice, day: int, context: dict) -> str:
         if day % DECISION_CADENCE_DAYS != 0:
@@ -161,6 +187,13 @@ def make_agent_policy(session, model: PropensityModel, config: PolicyConfig,
 
         as_of = REFERENCE_START + dt.timedelta(days=day)
         features = build_feature_vector(invoice.invoice_id, "none", as_of=as_of, session=session)
+
+        db_invoice = session.get(Invoice, invoice.invoice_id)
+        unresolved_dispute = (
+            session.query(Dispute)
+            .filter(Dispute.invoice_id == invoice.invoice_id, Dispute.resolved.is_(False))
+            .first()
+        )
 
         contacts_recent = (
             session.query(Communication)
@@ -179,7 +212,9 @@ def make_agent_policy(session, model: PropensityModel, config: PolicyConfig,
         invoice_amount = amount_for_invoice(invoice.invoice_id)
         state = PolicyState(
             invoice_amount=invoice_amount,
-            dispute_flag=False, dispute_resolved=True, no_contact_requested=False,
+            dispute_flag=bool(db_invoice.dispute_flag) if db_invoice else False,
+            dispute_resolved=unresolved_dispute is None,
+            no_contact_requested=False,
             active_promise_flag=features["active_promise_flag"],
             days_until_promised_date=features["days_until_promised_date"],
             broken_promise_streak=features["broken_promise_streak"],
@@ -239,6 +274,7 @@ def run_agent(latents: list[CustomerLatentState], model: PropensityModel):
 
     for day in range(N_DAYS):
         sync_new_invoices_eval(session, engine, synced_ids)
+        sync_dispute_state_eval(session, engine, day)
         engine.step(day, policy_fn)
         sync_realized_day(session, engine, day)
 
