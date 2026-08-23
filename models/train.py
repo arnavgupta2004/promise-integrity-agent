@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import datetime as dt
 import sys
+from collections import defaultdict
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -39,7 +40,7 @@ from sqlalchemy.orm import sessionmaker
 
 from backend.db import Base, Communication, Customer, Invoice, Payment, Promise
 from features.feature_engine import FEATURE_COLUMNS, TARGET, build_feature_vector
-from simulator.archetypes import ARCHETYPE_NAMES, sample_customer_latent
+from simulator.archetypes import sample_customer_latent
 from simulator.behavior_model import CustomerBehaviorModel
 from simulator.engine import SimInvoice, SimulationEngine
 
@@ -47,8 +48,10 @@ from simulator.engine import SimInvoice, SimulationEngine
 # Config
 # ---------------------------------------------------------------------------
 SEED = 7
-N_CUSTOMERS = 320          # ~46/archetype; kept modest -- see row-count note below
-N_DAYS = 150
+N_CUSTOMERS = 750          # bumped from 320 (then 600): stratified coverage of higher-lateness
+                            # buckets (see TRAINING_ARCHETYPE_WEIGHTS) needs more raw decision volume
+N_DAYS = 250                # bumped from 150 (then 220): the slowest archetypes need this much
+                            # runway to actually reach relative_lateness > 1.5 before the window ends
 DECISION_CADENCE_DAYS = 6  # a real decision (and training row) is only made every K days per
                             # invoice; every other day the logging policy returns "none" cheaply
                             # without touching the DB. Rollout stays daily (matches Stage 1's
@@ -66,6 +69,43 @@ SEGMENTS = ["SMB", "Mid-Market", "Enterprise"]
 # ("not a 'pay probability' decision, always policy-forced") -- the logging
 # policy therefore never assigns it, and it is not a model feature value.
 LOGGED_ACTIONS = ["none", "soft_reminder", "firm_reminder", "channel_escalation", "link_resend", "plan_proposal"]
+
+# Archetype mix for TRAINING DATA GENERATION only -- deliberately skewed
+# toward archetypes that spend more time overdue (higher avg_days_to_pay /
+# lower keep rates), so decision points actually land in the higher
+# relative_lateness buckets often enough to get adequate coverage there
+# (see the lateness-bucket stratification below). §4's archetype table is
+# otherwise an equal 7-way mix; that's still what Stage 6's eval harness
+# must use -- eval measures recovery on a realistic customer base, and
+# would be dishonest if run against this skewed population instead. This
+# weighting is local to this file's population-builder and never touches
+# simulator/archetypes.py's own (unweighted) ARCHETYPE_NAMES.
+TRAINING_ARCHETYPE_WEIGHTS = {
+    "model_citizen": 0.05,
+    "reliable_always_late": 0.10,
+    "cash_flow_strained_genuine": 0.15,
+    "disputer": 0.15,
+    "degrading": 0.15,
+    "serial_promiser": 0.20,
+    "non_responsive": 0.20,
+}
+
+# Finer relative_lateness buckets than risk_tier's single near_term/aging
+# split, used only for the stratified-coverage mechanism and its report
+# table below. Bucket 0 (<=0.3) is the dominant, already-saturated region;
+# stratified forcing only ever targets buckets 1-4.
+LATENESS_BUCKET_EDGES = [0.3, 0.6, 1.0, 1.5]
+LATENESS_BUCKET_LABELS = ["<=0.3", "(0.3,0.6]", "(0.6,1.0]", "(1.0,1.5]", ">1.5"]
+MIN_CELL_COUNT = 45          # minimum rows per (lateness bucket >= 1, action) cell
+STRATIFIED_FORCE_PROB = 0.97  # how often an under-filled cell is deliberately targeted, once found
+
+
+def lateness_bucket_index(relative_lateness: float) -> int:
+    for i, edge in enumerate(LATENESS_BUCKET_EDGES):
+        if relative_lateness <= edge:
+            return i
+    return len(LATENESS_BUCKET_EDGES)
+
 
 RISK_TIER_LATENESS_THRESHOLD = 1.0
 
@@ -213,14 +253,32 @@ def heuristic_action(features: dict) -> str:
 
 def make_logging_policy(session, pending_rows: dict, rng: np.random.Generator):
     """Returns a policy_fn(invoice, day, context) -> Action for
-    SimulationEngine.run(). ~HEURISTIC_PROB of decisions follow
-    heuristic_action(); the rest are drawn uniformly at random from the full
-    LOGGED_ACTIONS set, unrestricted -- that unrestricted randomness is what
-    prevents "risky customers only ever see aggressive interventions in the
-    training data" (architecture §2b's confounding trap). Every decision
-    made (on a cadence day) is recorded into `pending_rows`, keyed by
-    (invoice_id, day), for the training loop to pick up after realize().
+    SimulationEngine.run(). Three-way action selection, in priority order:
+
+      1. Stratified coverage forcing: if this decision's relative_lateness
+         bucket is >= 1 (i.e. not the dominant near-zero-lateness region)
+         and it still has an under-filled (bucket, action) cell -- fewer
+         than MIN_CELL_COUNT rows logged so far, including "none" -- target
+         one of those under-filled actions with probability
+         STRATIFIED_FORCE_PROB. This is the direct fix for a diagnosed
+         problem: pure 70/30 heuristic/random exploration left some
+         higher-lateness (bucket, action) cells at 0-6 rows, because so few
+         decision points land there at all and the heuristic branch skews
+         hard toward contact actions once lateness is high -- "none" in
+         particular was starved exactly where EIV needs P(pay | none)
+         estimated well.
+      2. Otherwise, ~HEURISTIC_PROB follows heuristic_action().
+      3. Otherwise, uniformly random across the full LOGGED_ACTIONS set --
+         unrestricted, which is what prevents "risky customers only ever
+         see aggressive interventions in the training data" (architecture
+         §2b's confounding trap) in the dominant low-lateness region.
+
+    Every decision made (on a cadence day) is recorded into `pending_rows`,
+    keyed by (invoice_id, day), for the training loop to pick up after
+    realize().
     """
+    bucket_action_counts: dict[tuple[int, str], int] = defaultdict(int)
+
     def policy_fn(invoice: SimInvoice, day: int, context: dict) -> str:
         if day % DECISION_CADENCE_DAYS != 0:
             return "none"
@@ -231,16 +289,27 @@ def make_logging_policy(session, pending_rows: dict, rng: np.random.Generator):
         # with whichever action actually gets chosen. Avoids a second DB round-trip.
         features = build_feature_vector(invoice.invoice_id, "none", as_of=as_of, session=session)
         risk_tier = "near_term" if features["relative_lateness"] < RISK_TIER_LATENESS_THRESHOLD else "aging"
+        bucket = lateness_bucket_index(features["relative_lateness"])
 
-        if rng.random() < HEURISTIC_PROB:
+        under_filled = [a for a in LOGGED_ACTIONS if bucket_action_counts[(bucket, a)] < MIN_CELL_COUNT]
+
+        if bucket >= 1 and under_filled and rng.random() < STRATIFIED_FORCE_PROB:
+            # Target the single most under-filled action specifically, not
+            # a uniform pick among all under-filled ones -- a uniform pick
+            # dilutes attention across up to 6 simultaneously-behind cells,
+            # which is what left "none" undershooting even with forcing on.
+            action = min(under_filled, key=lambda a: bucket_action_counts[(bucket, a)])
+        elif rng.random() < HEURISTIC_PROB:
             action = heuristic_action(features)
         else:
             action = str(rng.choice(LOGGED_ACTIONS))
 
+        bucket_action_counts[(bucket, action)] += 1
         features["intervention_type"] = action
         pending_rows[(invoice.invoice_id, day)] = {
             "features": features,
             "risk_tier": risk_tier,
+            "lateness_bucket": LATENESS_BUCKET_LABELS[bucket],
             "horizon_days": RISK_TIER_HORIZON[risk_tier],
             "customer_id": invoice.customer_id,
         }
@@ -253,16 +322,28 @@ def make_logging_policy(session, pending_rows: dict, rng: np.random.Generator):
 # Training data generation
 # ---------------------------------------------------------------------------
 
-def generate_training_data() -> pd.DataFrame:
-    rng = np.random.default_rng(SEED)
+def build_training_population(seed: int, n_customers: int) -> list[CustomerBehaviorModel]:
+    """Weighted toward slower/riskier archetypes -- see
+    TRAINING_ARCHETYPE_WEIGHTS's docstring for why this is safe only for
+    training-data generation, never for eval."""
+    latent_rng = np.random.default_rng(seed)
+    archetype_rng = np.random.default_rng(seed + 1)
+    names = list(TRAINING_ARCHETYPE_WEIGHTS.keys())
+    weights = np.array([TRAINING_ARCHETYPE_WEIGHTS[n] for n in names])
+    weights = weights / weights.sum()
 
-    latent_rng = np.random.default_rng(SEED)
     customers = []
-    for i in range(N_CUSTOMERS):
-        archetype = ARCHETYPE_NAMES[i % len(ARCHETYPE_NAMES)]
+    for i in range(n_customers):
+        archetype = str(archetype_rng.choice(names, p=weights))
         customer_id = f"train-{i:04d}-{archetype}"
         latent = sample_customer_latent(customer_id, archetype, latent_rng)
         customers.append(CustomerBehaviorModel(latent))
+    return customers
+
+
+def generate_training_data() -> pd.DataFrame:
+    rng = np.random.default_rng(SEED)
+    customers = build_training_population(SEED, N_CUSTOMERS)
 
     session = make_db_session()
     seed_customers(session, customers, rng)
@@ -306,6 +387,7 @@ def generate_training_data() -> pd.DataFrame:
         row[TARGET] = paid_within_n
         row["customer_id"] = pending["customer_id"]
         row["risk_tier"] = pending["risk_tier"]
+        row["lateness_bucket"] = pending["lateness_bucket"]
         rows.append(row)
 
     df = pd.DataFrame(rows)
@@ -372,6 +454,27 @@ def joint_distribution_table(df: pd.DataFrame) -> pd.DataFrame:
     return pd.crosstab(df["risk_tier"], df["intervention_type"])
 
 
+def lateness_bucket_coverage_table(df: pd.DataFrame) -> pd.DataFrame:
+    ordered = pd.Categorical(df["lateness_bucket"], categories=LATENESS_BUCKET_LABELS, ordered=True)
+    return pd.crosstab(ordered, df["intervention_type"]).reindex(columns=LOGGED_ACTIONS)
+
+
+def check_bucket_coverage(df: pd.DataFrame) -> list[str]:
+    """Returns a list of (bucket, action) cells among buckets >= 1 still
+    below MIN_CELL_COUNT, for honest reporting -- not an assertion, since
+    the rarest bucket for the rarest action may legitimately stay just
+    under the target even with stratified forcing turned up.
+    """
+    table = lateness_bucket_coverage_table(df)
+    shortfalls = []
+    for bucket in LATENESS_BUCKET_LABELS[1:]:
+        for action in LOGGED_ACTIONS:
+            n = int(table.loc[bucket, action]) if bucket in table.index else 0
+            if n < MIN_CELL_COUNT:
+                shortfalls.append(f"{bucket} x {action}: {n} rows (< {MIN_CELL_COUNT})")
+    return shortfalls
+
+
 def save_artifact(model: lgb.LGBMClassifier, categories: dict[str, list]) -> None:
     import joblib
     ARTIFACT_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -403,6 +506,18 @@ def main() -> None:
     print(joint.to_string(), "\n")
     print("=== Joint distribution: risk_tier x intervention_type (row %) ===")
     print((joint.div(joint.sum(axis=1), axis=0) * 100).round(1).to_string(), "\n")
+
+    print(f"=== Bucket coverage: relative_lateness bucket x intervention_type (counts, target >= {MIN_CELL_COUNT} for bucket>=1) ===")
+    bucket_coverage = lateness_bucket_coverage_table(df)
+    print(bucket_coverage.to_string(), "\n")
+    shortfalls = check_bucket_coverage(df)
+    if shortfalls:
+        print(f"Cells still below target ({len(shortfalls)}):")
+        for s in shortfalls:
+            print(f"  - {s}")
+    else:
+        print("Every (bucket, action) cell for bucket >= 1 meets the minimum.")
+    print()
 
     categories = {c: sorted(df[c].unique()) for c in CATEGORICAL_COLUMNS}
     train_df, dev_df = customer_level_split(df, DEV_FRACTION, SEED)
