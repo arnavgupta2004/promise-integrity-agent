@@ -1,143 +1,173 @@
-# 5-minute demo script
+# Pitch video recording script
 
-Six beats, minute-by-minute, per the original problem specification's §12 demo format (the user's own summary of it: portfolio overview → two-invoices-same-lateness-different-treatment → live loop run → promise tracked/verified → a stop case → close on the 3-arm numbers). Exact commands for every beat — nothing improvised live.
+Strict, numbered, blind-follow-able. Every step is exactly one of:
+- **[DO]** — a physical action (click, switch window, run a command).
+- **[SAY]** — exact words to speak, verbatim. Nothing to improvise.
+- **[POINT]** — where to point/gesture on screen while speaking.
 
-**No beat in this script depends on a live Gemini API call succeeding.** The live-loop-run beat uses `agent.tools.LLMDraftTool` (the free, deterministic stub), not the real Gemini-backed drafting tool — today's quota has been exhausted multiple times during this build, and this script is built to not care. If a reviewer specifically asks to see a real LLM call, see **"If asked: live LLM call"** at the bottom — don't improvise that live either.
-
----
-
-## Setup (before the reviewer sits down — not part of the 5 minutes)
-
-```bash
-cd promise-integrity-agent
-
-# 1. Confirm the batch DB and eval results are current (skip regeneration if they already are).
-ls -la data/audit_completeness_batch.db eval/results/table1_three_arm_comparison.csv
-
-# 2. Start the dashboard server.
-uvicorn backend.main:app --reload
-```
-
-Open **http://localhost:8000** in a browser tab, sized reasonably (not full mobile-width) so the audit-trail timeline text doesn't wrap excessively. Leave it on the **Portfolio Risk** tab (the default) — that's beat 1.
-
-**If you regenerate `data/audit_completeness_batch.db` for any reason as part of setup** (e.g. `python3 scripts/audit_completeness_check.py`), **restart the uvicorn server afterward** — `Ctrl+C` then re-run step 2. This isn't optional: the dashboard's SQLite connection is opened once at server startup, and swapping the DB file out from under a running server (via `mv`, which is what the batch script does) leaves it serving stale data from the old file handle until restarted. This bit us for real during Stage 13's build.
-
-Have a second terminal tab open in `promise-integrity-agent/` for beat 3 (the live loop run) — no server needed there, just the repo root.
+Steps are numbered sequentially across the whole video, not per-beat. Cumulative time estimates are word-count-verified (see the bottom of this file for the exact methodology and numbers) — treat them as a pacing guide, not a stopwatch to hit exactly.
 
 ---
 
-**Timing note**: the beat markers below are calibrated, not just labeled to sum to 5:00. Every blockquoted/spoken line was extracted and word-counted directly (436 words total), plus measured/estimated mechanical time (clicks, dropdown selects, the live script's real ~2.8s runtime, ~32s total). The first draft ran 771 words — ~6.2 minutes once counted this way, over budget — the narration below is the trimmed version:
+## PRE-RECORDING SETUP (do all of this before you hit record — none of it is a numbered step)
 
-| Pace | Speaking time | + mechanical (~32s) | Total |
-|---|---|---|---|
-| 140 wpm (brisk) | 3:07 | | ~3:39 |
-| 110 wpm (deliberate, realistic for a demo with numbers spoken aloud) | 3:58 | | ~4:30 |
+1. Confirm the batch DB and eval results are current:
+   ```bash
+   cd promise-integrity-agent
+   ls -la data/audit_completeness_batch.db eval/results/table1_three_arm_comparison.csv
+   ```
+2. Start the dashboard server:
+   ```bash
+   uvicorn backend.main:app --reload
+   ```
+3. Open **http://localhost:8000** in a browser window, sized so the audit-trail timeline text doesn't wrap excessively. Leave it on the **Portfolio Risk** tab (the default).
+4. **Stage the PRS terminal output** (needed for steps 14–15 below) — run this now, in a visible terminal window, and leave the output on screen. Do not run it live during recording:
+   ```bash
+   python3 -c "
+   import datetime as dt
+   from sqlalchemy import create_engine
+   from sqlalchemy.orm import sessionmaker
+   from features.feature_engine import compute_prs
+   engine = create_engine('sqlite:///data/audit_completeness_batch.db')
+   s = sessionmaker(bind=engine)()
+   as_of = dt.datetime(2025, 1, 11)
+   print('inv-batch-016 (serial_promiser) PRS:', compute_prs('batch-016-serial_promiser', as_of=as_of, session=s))
+   print('inv-batch-035 (reliable_always_late) PRS:', compute_prs('batch-035-reliable_always_late', as_of=as_of, session=s))
+   "
+   ```
+   Confirms `0.5` and `0.875` on screen. Leave this terminal window open and reachable.
+5. Open a **second, separate terminal** in `promise-integrity-agent/`, prompt clean, nothing pre-typed. This is for step 18 — the **one and only command run live** during recording.
+6. Arrange all three windows (browser, staged-PRS terminal, clean terminal) so you can switch between them with a single click/keystroke — no hunting during recording.
+7. If you regenerated `data/audit_completeness_batch.db` as part of any of the above, **restart the uvicorn server** (`Ctrl+C`, re-run step 2) before proceeding — a swapped DB file leaves the running server serving stale data from the old file handle until restarted.
+8. ⚠️ **Decide what you're actually going to say for `[name]` in step 2 below, and say it out loud once before recording.** The script still has the literal placeholder in it — it will not fix itself, and recording the bracketed text verbatim is an easy, embarrassing mistake to make on a real take.
 
-Either pace lands comfortably under 5:00, with 30–80s of real margin for a stumble or a pointed question — not scripted to the exact edge. This is a word-count/pacing model, calibrated with the one number I could actually measure (the live script's real runtime), not a literal recording — **rehearse it aloud once regardless**; real speech has pauses and variance no model fully captures.
-
-## 0:00 – 0:30 — Portfolio overview
-
-Already on screen (Portfolio Risk tab). Say while pointing:
-
-> "100 invoices under management. ₹34,50,000 at risk across 57 open invoices, ₹7,35,000 already recovered on 43 — every number here is a live read off the real audit-log database, nothing mocked."
-
-> "Risk tiering comes from each customer's live Promise Integrity Score, not just how overdue they are — that's the whole point of the next beat."
-
-*(If asked why "low risk" is empty: this dataset's unpaid invoices all cluster in the medium band — see the README's Known Limitations section. Don't dodge it, it's a documented, verified-real finding, not a bug you're hiding.)*
-
----
-
-## 0:30 – 1:25 — Two invoices, same lateness, different treatment
-
-Click **Invoice Audit Trail**. Both invoices share the exact same issue date and the exact same ₹15,000 amount — as of day 11, equally overdue by every calendar measure. **The thesis is specifically the PRS gap, not just the differing outcome.**
-
-Run this **before the demo starts** (not live — it's setup, not a beat) so the numbers are already sitting in a terminal to point at:
-
-```bash
-python3 -c "
-import datetime as dt
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-from features.feature_engine import compute_prs
-engine = create_engine('sqlite:///data/audit_completeness_batch.db')
-s = sessionmaker(bind=engine)()
-as_of = dt.datetime(2025, 1, 11)
-print('inv-batch-016 (serial_promiser) PRS:', compute_prs('batch-016-serial_promiser', as_of=as_of, session=s))
-print('inv-batch-035 (reliable_always_late) PRS:', compute_prs('batch-035-reliable_always_late', as_of=as_of, session=s))
-"
-```
-
-Prints **`0.5`** and **`0.875`**.
-
-1. Select **`inv-batch-016-serial_promiser-0`**, scroll to **day 11** `decide`: `human_escalation`, **`MAX_ATTEMPTS_REACHED`**.
-   > "Four contact attempts — day 0, 4, 7, 10 — never once produced a promise. PRS stuck at the neutral 0.5 default: not judged unreliable, just no evidence yet."
-2. Select **`inv-batch-035-reliable_always_late-0`**, scroll to **day 11** `verify`/`decide`: promise kept, then `none`/`EIV_MAX`.
-   > "A promise made day 0, verified kept that same day. Decide right after: none — left alone because they just proved they follow through."
-
-> "Same amount, same lateness, same day — PRS 0.5 versus 0.875. That's the actual thesis: one customer hasn't earned trust yet, the other just re-earned it, and treatment follows the score, not the invoice."
+Everything below assumes: browser on the dashboard (Portfolio Risk tab), PRS numbers already sitting in terminal 1, a clean terminal 2 ready, recording about to start.
 
 ---
 
-## 1:25 – 2:10 — Live loop run
+## RECORDING STEPS
 
-Switch to the second terminal. Run:
+**1. [DO]** Start screen/video recording. *(0:00)*
 
-```bash
-python3 scripts/demo_live_run.py
-```
+**2. [SAY]** ⚠️ **REPLACE `[name]` WITH YOUR ACTUAL NAME BEFORE RECORDING THIS LINE — do not say the placeholder text or the brackets out loud.** "Hi, I'm [name], and this is the Promise Integrity Agent, built for the AI Revenue Recovery track. B2B merchants extend credit terms and then have no real way to chase overdue invoices — someone eventually emails, with no memory of past promises, and no sense of who's actually going to pay versus who's stringing them along." *(0:02–0:26)*
 
-Runs in ~3 seconds, fully deterministic (seeded), zero network calls.
+**3. [SAY]** "Our answer: a reliability score built from each customer's actual promise-keeping history — not just how overdue they are — driving every decision the agent makes. It's bounded throughout by hard compliance rules: contact caps, cooling periods, dispute stops. And every decision is fully audited. Let me show you it running on a real 100-invoice portfolio." *(0:26–0:50)*
 
-> "Two fresh invoices — one reliable, one unreliable — run through the real loop live, right now, for 12 simulated days."
+### Beat 1 — Portfolio overview
 
-While it prints:
+**4. [POINT]** The "Total ₹ at risk" and "Total ₹ recovered" stat cards. *(0:50–0:52)*
 
-> "Not a replay — the actual Detect-through-Reassess loop, executing live. Watch the reliable customer: one plan proposal day 0, paid by day 1. Watch the unreliable one: same opening move, but day 3 they promise, then go quiet — the cooling-period rule holding off contact while it's pending. Same start, completely different trajectory."
+**5. [SAY]** "100 invoices under management. ₹34,50,000 at risk across 57 open invoices, ₹7,35,000 already recovered on 43 — every number here is a live read off the real audit-log database, nothing mocked." *(0:52–1:05)*
+
+**6. [POINT]** The risk-tier bars (High / Medium / Low). *(1:05–1:06)*
+
+**7. [SAY]** "Risk tiering comes from each customer's live Promise Integrity Score, not just how overdue they are — that's the whole point of the next beat." *(1:06–1:17)*
+
+### Beat 2 — Two invoices, same lateness, different treatment
+
+**8. [DO]** Click the **Invoice Audit Trail** tab; select **`inv-batch-016-serial_promiser-0`** from the dropdown; scroll to the **day 11 `decide`** event. *(1:17–1:19)*
+
+**9. [POINT]** The line `decision=human_escalation`, rationale `MAX_ATTEMPTS_REACHED`. *(1:19–1:20)*
+
+**10. [SAY]** "Four contact attempts — day 0, 4, 7, 10 — never once produced a promise. PRS stuck at the neutral 0.5 default: not judged unreliable, just no evidence yet." *(1:20–1:33)*
+
+**11. [DO]** Select **`inv-batch-035-reliable_always_late-0`** from the dropdown; scroll to the **day 11 `verify`/`decide`** events. *(1:33–1:35)*
+
+**12. [POINT]** The `PROMISE_VERIFIED` / `promise_kept` line, then `decision=none`, rationale `EIV_MAX` right below it. *(1:35–1:36)*
+
+**13. [SAY]** "A promise made day 0, verified kept that same day. Decide right after: none — left alone because they just proved they follow through." *(1:36–1:47)*
+
+**14. [POINT]** Switch to terminal 1 (the pre-staged PRS output); point at the two printed numbers. *(1:47–1:48)*
+
+**15. [SAY]** "Same amount, same lateness, same day — PRS 0.5 versus 0.875. That's the actual thesis: one customer hasn't earned trust yet, the other just re-earned it, and treatment follows the score, not the invoice." *(1:48–2:03)*
+
+### Beat 3 — Live loop run
+
+**16. [DO]** Switch to terminal 2 (the clean one). *(2:03–2:05)*
+
+**17. [SAY]** "Two fresh invoices, two of this system's seven named customer archetypes — model_citizen and serial_promiser — run through the real loop live, right now, for 12 simulated days." *(2:05–2:17)*
+
+**18. [DO]** **Run live**: `python3 scripts/demo_live_run.py` — this is the one command executed during recording, not staged ahead of time. Takes ~3 seconds; let the output finish printing on screen. *(2:17–2:21)*
+
+**19. [SAY]** (spoken over/immediately after the output) "Not a replay — the actual Detect-through-Reassess loop, executing live. Watch the reliable customer: one plan proposal day 0, paid by day 1. Watch the unreliable one: same opening move, but day 3 they promise, then go quiet — the cooling-period rule holding off contact while it's pending. Same start, completely different trajectory." *(2:21–2:44)*
+
+### Beat 4 — Promise tracked and verified
+
+**20. [DO]** Switch back to the browser; select **`inv-batch-009-serial_promiser-0`** from the dropdown (146 events). *(2:44–2:46)*
+
+**21. [POINT]** The **day 0 `act`** event, rationale `PROMISE_CAPTURED`. *(2:46–2:47)*
+
+**22. [SAY]** "A plan proposal goes out on day zero, and the customer commits to a date — that commitment becomes a real Promise row in the database, not just a line in a transcript." *(2:47–3:01)*
+
+**23. [POINT]** The repeated `COOLING_PERIOD_ACTIVE` events, days 1–10. *(3:01–3:03)*
+
+**24. [SAY]** "Ten days of silence while that promise is outstanding. That's not the agent going idle — it's rule three's cooling-period constraint, deliberately holding off contact so a customer who just committed isn't hounded before they've had a chance to follow through." *(3:03–3:20)*
+
+**25. [POINT]** The **day 11 `verify`** event, `PROMISE_VERIFIED` / `promise_broken`. *(3:20–3:22)*
+
+**26. [SAY]** "The grace period elapses, the payment never lands, the promise is marked broken — and that write updates this customer's PRS in the same motion. Not a nightly batch job. Immediate." *(3:22–3:35)*
+
+**27. [POINT]** The **day 11 `decide`** event onward, rationale `PRS_BELOW_PLAN_FLOOR,EIV_MAX`. *(3:35–3:36)*
+
+**28. [SAY]** "On the very next decision cycle, the freshly-lowered score disqualifies this customer from another plan proposal. That's the Reassess feedback loop the architecture calls for — not asserted in a slide, sitting right here in the audit log." *(3:36–3:53)*
+
+**29. [DO]** Scroll down to the **day 22** event. *(3:53–3:55)*
+
+**30. [POINT]** `ALREADY_TERMINAL`; the invoice header showing `status: paid`. *(3:55–3:56)*
+
+**31. [SAY]** "And yet this same invoice quietly gets paid a few days later. The broken promise didn't block recovery — it just changed how the system treats this customer from here on." *(3:56–4:10)*
+
+**32. [SAY]** "Capture, patience, verification, consequence — and none of it needed a human to step in until the record actually demanded one." *(4:10–4:19)*
+
+### Beat 5 — A stop case
+
+**33. [DO]** Select **`inv-batch-010-disputer-0`** from the dropdown. *(4:19–4:21)*
+
+**34. [SAY]** "A real, naturally-occurring dispute from the population — not a constructed test scenario." *(4:21–4:26)*
+
+**35. [DO]** Scroll to the **day 4 `decide`/`act`** pair. *(4:26–4:28)*
+
+**36. [POINT]** `DISPUTE_UNRESOLVED`, `human_escalation`. *(4:28–4:30)*
+
+**37. [SAY]** "An open dispute escalates immediately, ahead of every other rule — rule 1, highest priority. It overrides everything, including whatever the model ranked highest. The moment a dispute is open, the agent stops making its own calls, full stop." *(4:30–4:46)*
+
+### Beat 6 — Close on the 3-arm numbers
+
+**38. [DO]** Click the **3-Arm Comparison** tab. *(4:46–4:48)*
+
+**39. [SAY]** "Proof this isn't just a plausible pipeline. Three arms, same held-out population, same behavior: do nothing, nag everyone, or run this agent." *(4:48–4:58)*
+
+**40. [POINT]** The bar chart, left to right. *(4:58–4:59)*
+
+**41. [SAY]** "No-Intervention: ₹1.10 crore net recovery. Naive-Uniform: ₹1.10 crore. Promise Integrity Agent: ₹1.20 crore — plus ₹9.67 lakh over doing nothing, plus ₹9.48 lakh over naive, after ₹2.51 lakh in cost." *(4:59–5:12)*
+
+**42. [SAY]** "And the agent isn't grading its own homework — the model that decided never saw these outcomes. It only sees pre-action features; the counterfactual ground truth comes from the simulator's privileged internals, revealed only in the eval harness, never fed back. That's what makes this a causal number, not a self-report — full detail in the README." *(5:12–5:37)*
+
+### Wrap
+
+**43. [SAY]** "This wasn't just built — it was tested to try to break it, repeatedly, and what we found got fixed, not buried. A training population that would have quietly confounded the evaluation was caught and replaced with a genuinely held-out one before this eval ever ran. A real bug let 101 messages go out that the policy engine had already flagged as needing human approval — caught not by a checklist of expected failures, but by a generic completeness checker built to catch any violation pattern, not just the ones we anticipated. And two of the policy engine's own hard safety rules — dispute-handling and no-contact-honoring — turned out to be structurally unreachable through the real agent loop, despite passing their unit tests. We found that late, fixed it, and re-ran the full regression — the evaluation, the audit batch, this dashboard — to confirm the fix actually held. That's the real claim here: not that this agent is correct, but that we went looking for the ways it wasn't, and it's on the record. Thanks for watching." *(5:37–6:53)*
+
+**44. [DO]** Stop recording. *(6:53)*
 
 ---
 
-## 2:10 – 3:10 — Promise tracked and verified
+## IF SOMETHING GOES WRONG
 
-Back to the dashboard, **Invoice Audit Trail**. Select **`inv-batch-009-serial_promiser-0`** (146 events — the richest full promise lifecycle in the batch).
+**A click/tab/dropdown doesn't register.** Pause, click again. Do not narrate the fumble ("let me just—") — dead air edits out cleanly, an on-camera apology doesn't. Since this is a recorded submission, not a live presentation, the simplest fix is usually the right one: stop, back up a few seconds, and redo that [DO] step and everything after it in the same take, or splice in a clean re-take of just that segment in editing.
 
-1. **Day 0, `act`**: `PROMISE_CAPTURED` — "plan proposal goes out, customer commits to a date."
-2. **Days 1–10**: `COOLING_PERIOD_ACTIVE` — "deliberately silent while the promise is outstanding — not neglect, rule 3's grace period."
-3. **Day 11, `verify`**: `PROMISE_VERIFIED`, broken — "grace period elapsed, payment never landed, PRS updates immediately."
-4. **Day 11 onward, `decide`**: `PRS_BELOW_PLAN_FLOOR,EIV_MAX` — "the lowered score disqualifies plan_proposal on the very next cycle. That's the Reassess feedback loop, in real data."
-5. **Day 22**: `ALREADY_TERMINAL` — "quietly paid, sometime between day 21 and 22."
+**`demo_live_run.py` (step 18) errors or hangs.** It's deterministic and has been verified to run in ~3 seconds with zero network calls — a hang means something changed in the environment since this script was written, not bad luck on this run. Do not debug live on camera. Kill it (`Ctrl+C`), say the [SAY] line at step 19 anyway (it describes the *expected* output, which is accurate to what the script does), and note in post-production that beat 3 needs a re-shoot once the script is fixed. Never attempt to fix code live during a recording take.
 
-> "Capture, cooling period, verification, PRS consequence — paid eventually, but the score already reflects the broken promise."
+**You lose your place in the audit trail (wrong day, wrong invoice, scrolled too far).** Every invoice ID and day number in this script is written out explicitly in the [DO]/[POINT] steps above — glance back at the step, not at the dashboard, to reorient. If you're visibly lost for more than a couple of seconds, cut and re-take that beat from its most recent numbered [DO] step rather than pushing through.
 
----
+**You blank on a [SAY] line.** Every line is short enough to read directly off this document if needed — this script is meant to be visible off-camera (second monitor, printed page, teleprompter) precisely so nothing needs to be memorized. Re-take the line rather than paraphrase; the numbers and rationale codes in each line are exact and shouldn't be improvised.
 
-## 3:10 – 3:50 — A stop case
-
-Select **`inv-batch-010-disputer-0`**.
-
-> "A real, naturally-occurring dispute from the population — not a constructed test scenario."
-
-Scroll to **day 4 `decide`/`act`**: `DISPUTE_UNRESOLVED`, `human_escalation`.
-
-> "An open dispute escalates immediately, ahead of every other rule — rule 1, highest priority. It overrides everything, including whatever the model ranked highest. The moment a dispute is open, the agent stops making its own calls, full stop."
-
-*(Optional, if there's time: scroll further to show `ALREADY_TERMINAL` repeating — the agent never re-engages once escalated, even though the underlying dispute record is still capable of resolving in the background, verified separately in `tests/test_live_slice_verify.py`'s sibling test.)*
+**Recording runs long.** Don't rush mid-recording — a rushed demo reads worse than a slightly-long one. Finish the take at a natural pace; you can adjust playback speed or trim in editing afterward (the wrap and the beat-6 causal-methodology line are the safest places to tighten if you do trim, since they restate points made earlier).
 
 ---
 
-## 3:50 – 4:30 — Close on the 3-arm numbers
+## Timing methodology (for reference, not part of the recording)
 
-Click **3-Arm Comparison**.
-
-> "Proof this isn't just a plausible pipeline. Three arms, same held-out population, same behavior: do nothing, nag everyone, or run this agent."
-
-Read off the chart/table:
-- **No-Intervention**: ₹1.10 crore net recovery.
-- **Naive-Uniform**: ₹1.10 crore.
-- **Promise Integrity Agent**: ₹1.20 crore — **+₹9.67 lakh over doing nothing, +₹9.48 lakh over naive**, after ₹2.51 lakh in cost.
-
-> "And the agent isn't grading its own homework — the model that decided never saw these outcomes. It only sees pre-action features; the counterfactual ground truth comes from the simulator's privileged internals, revealed only in the eval harness, never fed back. That's what makes this a causal number, not a self-report — full detail in the README."
-
-Close there. **4:30 on the clock — 30 seconds of buffer before the 5:00 ceiling for a stumble or a pointed question.**
+Every one of the 21 [SAY] lines above was word-counted directly: 870 words total across 44 steps (up from 581 after this content-quality pass — the wrap and several beat-4 lines were deliberately expanded, not trimmed, once timing stopped being a constraint). The cumulative timestamps are computed from that at a brisk 140 wpm pace plus ~42s of mechanical time (clicks/scrolls/the real `demo_live_run.py` runtime), landing at 6:55. Speak at whatever pace feels natural — since this is a recorded, editable video, the timestamps above are a pacing guide for staying roughly on track while recording, not a target to hit exactly. Playback speed and trimming in post cover the rest.
 
 ---
 
